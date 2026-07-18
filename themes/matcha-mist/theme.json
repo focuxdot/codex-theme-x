@@ -1,0 +1,40 @@
+{
+  "schema": "codextheme/1",
+  "id": "matcha-mist",
+  "name": "Matcha Mist",
+  "variant": "light",
+  "author": "codex-theme-x",
+  "official": {
+    "accent": "#4e7d24",
+    "ink": "#2c3a22",
+    "surface": "#f3f7ec",
+    "contrast": 55,
+    "semanticColors": {
+      "diffAdded": "#3f8f4f",
+      "diffRemoved": "#c2566a",
+      "skill": "#8a67c9"
+    },
+    "fonts": {}
+  },
+  "home": {
+    "height": 252,
+    "focalPoint": "72% center",
+    "overlay": 0.9,
+    "cardOpacity": 0.9,
+    "kicker": "Matcha Mist",
+    "tagline": "Slow down, focus, make something good."
+  },
+  "copy": {
+    "greeting": "茶雾缭绕，{project} 今天种点什么？",
+    "placeholder": "山间新芽，随心输入",
+    "title": "Codex · Matcha Mist"
+  },
+  "background": {
+    "file": "background.svg",
+    "dim": 1,
+    "blur": 0,
+    "panelOpacity": 0,
+    "sidebarOpacity": 0.6,
+    "glassBlur": 16
+  }
+}

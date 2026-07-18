@@ -1,0 +1,40 @@
+{
+  "schema": "codextheme/1",
+  "id": "aurora-night",
+  "name": "Aurora Night",
+  "variant": "dark",
+  "author": "codex-theme-x",
+  "official": {
+    "accent": "#2ee6a8",
+    "ink": "#e6edf7",
+    "surface": "#10173a",
+    "contrast": 60,
+    "semanticColors": {
+      "diffAdded": "#2ee6a8",
+      "diffRemoved": "#ff6b81",
+      "skill": "#9d8cff"
+    },
+    "fonts": {}
+  },
+  "home": {
+    "height": 252,
+    "focalPoint": "72% center",
+    "overlay": 0.9,
+    "cardOpacity": 0.88,
+    "kicker": "Aurora Night",
+    "tagline": "A quiet horizon for deep work."
+  },
+  "copy": {
+    "greeting": "极光之下，{project} 今晚亮起什么？",
+    "placeholder": "夜航随想，随心输入",
+    "title": "Codex · Aurora Night"
+  },
+  "background": {
+    "file": "background.svg",
+    "dim": 0.9,
+    "blur": 0,
+    "panelOpacity": 0,
+    "sidebarOpacity": 0.6,
+    "glassBlur": 18
+  }
+}

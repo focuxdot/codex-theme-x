@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2560" height="1600" viewBox="0 0 2560 1600">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8faf2"/>
+      <stop offset="0.55" stop-color="#f0f5e6"/>
+      <stop offset="1" stop-color="#e4eed4"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.3" cy="0.18" r="0.65">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.8"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.2"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mist" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f5f9ee" stop-opacity="0"/>
+      <stop offset="1" stop-color="#f5f9ee" stop-opacity="0.85"/>
+    </linearGradient>
+    <filter id="soften" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="40"/>
+    </filter>
+  </defs>
+  <rect width="2560" height="1600" fill="url(#sky)"/>
+  <rect width="2560" height="1600" fill="url(#glow)"/>
+  <path d="M -100 1080 C 400 940, 900 1060, 1400 950 C 1900 850, 2300 980, 2700 900 L 2700 1700 L -100 1700 Z"
+        fill="#c4d8a4" opacity="0.7" filter="url(#soften)"/>
+  <path d="M -100 1260 C 500 1130, 1200 1290, 1800 1160 C 2200 1080, 2500 1200, 2700 1150 L 2700 1700 L -100 1700 Z"
+        fill="#a8c684" opacity="0.7" filter="url(#soften)"/>
+  <path d="M -100 1440 C 600 1330, 1300 1470, 1950 1360 C 2320 1300, 2580 1400, 2700 1370 L 2700 1700 L -100 1700 Z"
+        fill="#8bb168" opacity="0.65" filter="url(#soften)"/>
+  <rect y="1150" width="2560" height="450" fill="url(#mist)"/>
+  <g fill="#6f9a4c" opacity="0.5">
+    <ellipse cx="520" cy="1210" rx="40" ry="7"/>
+    <ellipse cx="640" cy="1240" rx="34" ry="6"/>
+    <ellipse cx="1520" cy="1310" rx="42" ry="7"/>
+    <ellipse cx="1650" cy="1290" rx="30" ry="5"/>
+    <ellipse cx="2160" cy="1230" rx="36" ry="6"/>
+  </g>
+</svg>

@@ -1,0 +1,4 @@
+# Explicit invocation only. This skill's vocabulary (theme, skin, background,
+# colors) overlaps everyday coding conversations; implicit matching could
+# fire while the user is styling THEIR OWN app and start repainting Codex.
+allow_implicit_invocation: false

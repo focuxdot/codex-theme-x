@@ -1,0 +1,12 @@
+#!/bin/sh
+# Confirm the GitHub SSH identity is the expected maintainer account BEFORE any push.
+# Runs on every `git push` (once core.hooksPath is set to .githooks — see
+# scripts/install-hooks.sh). Non-zero exit aborts the push, so a push can never
+# go out under the wrong account.
+#
+# Skips silently if no maintainer account is configured (a fork/contributor clone
+# that hasn't set ctx.githubAccount), so it never blocks non-maintainer workflows.
+if [ -z "$(git config ctx.githubAccount)" ]; then
+  exit 0
+fi
+exec node "$(git rev-parse --show-toplevel)/scripts/git-push-maintainer.mjs" --check

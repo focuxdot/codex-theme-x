@@ -1,0 +1,61 @@
+name: "Bug report / 缺陷反馈"
+description: "Something broke — install, apply, background, colors, restore… / 安装、应用、背景、配色、还原等出问题"
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please fill every required field — incomplete reports may be closed.
+        感谢反馈！请尽量填全必填项；信息过少的 Issue 可能会被关闭。
+
+        **Self-check first / 请先自检：** run `$theme-x doctor` in Codex (or
+        `bash ~/.codex/skills/theme/scripts/doctor.sh`) and paste its output below.
+        `$theme-x restore` is always the safe exit. / `$theme-x restore` 永远可以安全还原。
+
+        **Do not paste / 请勿粘贴：** API keys, `auth.json`, tokens, private chat content.
+        **不要贴：** API Key、`auth.json`、密钥、隐私对话内容。
+
+        codex-theme-x writes colors through the official appearance system and injects
+        only a background layer via **loopback CDP**. It does **not** modify the app
+        bundle / `app.asar`, and does **not** touch API settings.
+        本项目通过官方外观系统写颜色、仅经**本机回环 CDP** 注入背景层，**不修改**安装包与签名，**不碰** API 配置。
+
+  - type: input
+    id: os_version
+    attributes:
+      label: macOS version / 系统版本
+      description: e.g. macOS 15.5
+    validations:
+      required: true
+
+  - type: input
+    id: codex_version
+    attributes:
+      label: Codex app version / Codex 版本
+      description: Codex menu → About / 关于
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`$theme-x doctor` output / 自检输出"
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened / 发生了什么
+      description: Steps, expected vs actual. Screenshots welcome. / 复现步骤、预期与实际，欢迎截图。
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / 日志（可选）
+      description: "`~/.codex/codex-theme-x/apply.log` / `keeper.log` tail"
+      render: text

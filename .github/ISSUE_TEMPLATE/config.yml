@@ -1,0 +1,14 @@
+# Blank issues are disabled — please pick a template.
+# 已关闭空白 Issue，请选择模板提交。
+blank_issues_enabled: false
+
+contact_links:
+  - name: "README（中文）"
+    url: "https://github.com/focuxdot/codex-theme-x/blob/main/README.md"
+    about: "安装、原理、分享、FAQ · Install, how it works, sharing, FAQ"
+  - name: "README (English)"
+    url: "https://github.com/focuxdot/codex-theme-x/blob/main/README.en.md"
+    about: "Install, architecture, sharing"
+  - name: ".codextheme format / 主题包格式"
+    url: "https://github.com/focuxdot/codex-theme-x/blob/main/spec/codextheme-format.md"
+    about: "主题包 v1 规范 · Theme package v1 spec"

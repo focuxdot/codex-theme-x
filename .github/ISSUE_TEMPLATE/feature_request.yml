@@ -1,0 +1,40 @@
+name: "Feature request / 功能建议"
+description: "An idea for codex-theme-x / 想要的能力或改进"
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Scope / 项目范围: complete themes for the Codex desktop app — official
+        appearance colors + a minimally-injected background layer, driven as a skill.
+        Codex 桌面端完整主题：官方外观配色 + 最小注入背景层，以 skill 驱动。
+        Not in scope / 不做：API 中转配置、修改官方安装包。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you want to achieve / 想达成什么
+      description: Describe the need, not only the solution. / 先说需求场景，再说方案。
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / 期望的行为（可选）
+      description: e.g. a new `$theme-x ...` subcommand, a tune knob, Windows support…
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 方向
+      options:
+        - Theme design & AI palette / 配色与看图设计
+        - Background & glass injection / 背景与毛玻璃
+        - Sharing / 分享
+        - Install & keeper / 安装与常驻保持
+        - Windows support
+        - Other / 其他
+    validations:
+      required: true
