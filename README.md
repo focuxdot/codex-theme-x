@@ -1,6 +1,6 @@
 # codex-theme-x
 
-**发一张图给 Codex，它自己把自己变成这个主题。**
+**一个 Codex 桌面版的主题 skill：发一张图给 Codex，它自己把自己变成这个主题。**
 
 [English](README.en.md) · [主题包格式](spec/codextheme-format.md) · [安装](#安装)
 

@@ -1,6 +1,6 @@
 # codex-theme-x
 
-**Send Codex an image — it redesigns itself into that theme.**
+**A theme skill for the Codex desktop app: send Codex an image — it redesigns itself into that theme.**
 
 [中文](README.md) · [Theme format](spec/codextheme-format.md)
 
