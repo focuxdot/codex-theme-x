@@ -7,13 +7,19 @@
 //   - Codex was opened normally from Finder/Dock: restart it once with the
 //     loopback CDP flags, then restore the injection.
 //
+// Ad-event flush (event-driven, NEVER periodic upload — handoff §4): the renderer
+// drops a one-shot flag in localStorage on buffer-full (10th event) and on
+// graceful unload (normal-exit); this host consumes the flag via
+// `inject.mjs flush-signal` and runs exactly one report per signal. The only
+// other upload is startup catch-up (drains whatever a crash/force-quit left).
+// A lightweight resident probe checks for that one-shot flag every 4 seconds;
+// a check without a flag does not call report and does not touch the network.
+//
 // Two modes:
-//   --oneshot (default install): event-driven, zero resident cost. launchd
-//     WatchPaths fires on the app's Singleton files (rewritten at every
-//     launch); this process checks the deterministic conditions, acts if
-//     needed, and exits. Quit events cost one instant no-op spawn.
-//   (no flag): legacy resident poller, kept as a fallback for setups where
-//     the Electron user-data dir can't be watched.
+//   (no flag, default install): resident event bridge. It observes one-shot
+//     flags because launchd filesystem watches cannot see localStorage writes,
+//     and backs off to ~30s state checks while Codex stays fully closed.
+//   --oneshot: compatibility/manual launch mode for a single startup pass.
 //
 // Themes without a background, unapplied themes, and users who did not enable
 // the keeper are never affected.
@@ -26,6 +32,11 @@ import { fileURLToPath } from 'node:url';
 const CTX_HOME = process.env.CTX_HOME ?? path.join(os.homedir(), '.codex', 'codex-theme-x');
 const PORT = process.env.CTX_PORT ?? '9341';
 const INTERVAL_MS = 4000;
+// While Codex is fully closed the resident poller drops to a slow cadence:
+// after BACKOFF_AFTER consecutive unreachable ticks it sleeps an extra
+// BACKOFF_INTERVAL_MS per tick (state checks still run, just less often).
+const BACKOFF_AFTER = 5;
+const BACKOFF_INTERVAL_MS = 26000; // 4s + 26s ≈ one poll per 30s when idle
 const RELAUNCH_GRACE_MS = 60000;
 const INJECT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'inject.mjs');
 const CODEX_BUNDLE_ID = 'com.openai.codex';
@@ -146,12 +157,53 @@ async function relaunchWithDebug(theme) {
 let lastFailureLog = 0;
 let restartBusy = false;
 let relaunchGraceUntil = 0;
+let wasInjected = false;    // injected → unreachable edge detector (exit flush)
+let unreachableStreak = 0;  // consecutive unreachable ticks, for idle backoff
+let catchUpPending = true;   // once per newly reachable Codex session
 const handledNormalPids = new Set();
 
 function logFailure(message) {
   if (Date.now() - lastFailureLog <= 60000) return;
   console.error(`[${new Date().toISOString()}] ${message}`);
   lastFailureLog = Date.now();
+}
+
+// One-shot startup catch-up ONLY (handoff §4: the sole host-side automatic
+// triggers are buffer-full, normal-exit, and next-startup — never a timer).
+// inject.mjs report no-ops without ADS_API_BASE, so this is inert unless
+// telemetry is configured.
+function catchUpReport() {
+  try {
+    execFileSync(process.execPath, [INJECT, 'report', '--port', PORT],
+      { timeout: 30000, stdio: ['ignore', 'ignore', 'ignore'] });
+  } catch (err) {
+    logFailure(`report catch-up failed: ${err.message}`);
+  }
+}
+
+// Event-driven flush bridge (handoff §4/§5.1): the renderer never fetches the
+// platform — it only drops a one-shot flag in localStorage (buffer-full on the
+// 10th event, normal-exit on graceful unload) and logs a controlled console
+// marker. The keeper's CDP probe (inject.mjs flush-signal) atomically reads-
+// and-clears the flag and the keeper runs exactly one report per consumed
+// signal. No periodic upload: a poll that finds no flag does nothing, and a
+// crashed/killed Codex simply leaves the flag unread until the next startup.
+async function takeFlushSignal() {
+  try {
+    const out = execFileSync(process.execPath, [INJECT, 'flush-signal', '--port', PORT],
+      { timeout: 10000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    return out && out !== 'null' ? JSON.parse(out) : null;
+  } catch {
+    return null; // CDP gone mid-exit — the flag stays put for next startup
+  }
+}
+
+async function flushIfSignaled() {
+  const signal = await takeFlushSignal();
+  if (!signal) return false;
+  console.log(`[${new Date().toISOString()}] ad flush signaled (${signal.reason ?? 'unknown'}); reporting once`);
+  catchUpReport();
+  return true;
 }
 
 async function tick() {
@@ -162,7 +214,43 @@ async function tick() {
   // Any reachable CDP state proves the controlled relaunch succeeded. Clear
   // the grace window so a later user launch can be handled immediately.
   if (state !== 'unreachable') relaunchGraceUntil = 0;
-  if (state === 'injected' || state === 'starting') return;
+  // Theme is live: consume any renderer flush signal (buffer-full / normal-
+  // exit) and run at most one report per signal. No signal → no upload.
+  if (state === 'injected') {
+    wasInjected = true;
+    unreachableStreak = 0;
+    const flushed = await flushIfSignaled();
+    // A new reachable app session is the third allowed upload trigger. If a
+    // flush flag was already consumed above, that report drained the same
+    // buffer, so do not issue a redundant startup report.
+    if (catchUpPending) {
+      catchUpPending = false;
+      if (!flushed) catchUpReport();
+    }
+    return;
+  }
+  if (state === 'starting') return;
+
+  // injected → unreachable edge: a graceful quit fires the renderer's
+  // normal-exit signal an instant before CDP dies. The 4s poll almost always
+  // lands AFTER the process is gone, so without an edge catch that signal
+  // would sit unread until the next startup. Probe immediately — a dying
+  // renderer often still answers for a beat; a dead one just returns null and
+  // the flag stays put for startup catch-up.
+  if (state === 'unreachable' && wasInjected) {
+    wasInjected = false;
+    await flushIfSignaled();
+  }
+
+  // Backoff while Codex stays closed: no app, no CDP, no point polling at full
+  // rate (and no point spawning status probes against a dead port).
+  if (state === 'unreachable') {
+    catchUpPending = true;
+    unreachableStreak += 1;
+    if (unreachableStreak >= BACKOFF_AFTER) await delay(BACKOFF_INTERVAL_MS);
+  } else {
+    unreachableStreak = 0;
+  }
 
   if (state === 'missing') {
     try {
@@ -238,20 +326,26 @@ async function waitForCdpAndInject(theme, timeoutMs = 45000) {
   return false;
 }
 
-// One event-driven pass: launchd fires us on app launch/quit; we check the
-// deterministic conditions (image theme active + not currently loaded), fix
-// what needs fixing, and exit. No resident process.
+// One compatibility/manual pass: check the deterministic conditions (image
+// theme active + not currently loaded), fix what needs fixing, and exit.
 async function oneshot() {
   const theme = activeBackgroundTheme();
   if (!theme) return;
 
   const state = await injectionState();
-  if (state === 'injected') return;
+  // Startup catch-up drains whatever a previous crash/force-quit left behind;
+  // a pending flush signal is consumed by that same single report. Note the
+  // report uploads the WHOLE current buffer — including events written moments
+  // ago by this very launch (e.g. today's active_day) — not only "historical"
+  // leftovers. Handoff §4 allows this (startup is one of the three triggers);
+  // the platform dedupes by (installId, s) either way.
+  if (state === 'injected') { catchUpReport(); return; }
 
   if (state === 'missing') {
     try {
       execFileSync(process.execPath, [INJECT, 'apply', '--theme', theme.themeDir, '--port', PORT], { timeout: 30000 });
       console.log(`[${new Date().toISOString()}] re-applied ${path.basename(theme.themeDir)} (page reload)`);
+      catchUpReport();
     } catch (err) {
       logFailure(`re-apply failed: ${err.message}`);
     }
@@ -260,7 +354,7 @@ async function oneshot() {
 
   // 'starting': the CDP port exists — a controlled relaunch is booting. Stay
   // with it until the page is ready, then inject.
-  if (state === 'starting') { await waitForCdpAndInject(theme); return; }
+  if (state === 'starting') { if (await waitForCdpAndInject(theme)) catchUpReport(); return; }
 
   // 'unreachable': no CDP endpoint at all.
   const processes = codexMainProcesses();
@@ -288,7 +382,7 @@ async function oneshot() {
     logFailure(`debug relaunch failed: ${err.message}`);
     return;
   }
-  await waitForCdpAndInject(theme);
+  if (await waitForCdpAndInject(theme)) catchUpReport();
 }
 
 function main() {

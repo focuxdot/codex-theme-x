@@ -26,7 +26,7 @@ and send `$theme-x` + an image. Done:
 ```
 $theme-x ~/Pictures/miku.jpg     # image → AI palette → full theme
 $theme-x cyberpunk rainy night   # prompt → image → theme
-$theme-x list / switch / share / restore / doctor
+$theme-x list / switch / share (export / 导出 / 分享) / restore / doctor
 ```
 
 Switching is one sentence too — `$theme-x switch <name>`, no restart.
@@ -50,6 +50,9 @@ artwork runs full-bleed, and the conversation sits on a soft-edged
 
 - **AI-designed palette** written into the **official appearance system**
   (native, persistent, survives app updates)
+- **Follows light/dark automatically by default**: one image yields both a light
+  and a dark palette (with per-mode frost); flipping the system or Codex mode
+  swaps the whole theme live, no re-apply
 - **Home Hero** on the blank page — a wide themed banner with a tagline;
   task pages keep the native full-bleed artwork
 - **Copy layer**: greeting, composer placeholder and window title match the
@@ -74,9 +77,34 @@ No `.app` / `app.asar` modification, no signature tampering, fully reversible.
 
 ## Sharing
 
-`$theme-x share` exports `<id>.codextheme` (a zip). Recipients with the tool
+`$theme-x share` (also `export` / `导出` / `分享`) exports `<id>.codextheme`
+(a zip). Recipients with the tool
 drop it into a Codex chat; recipients without it paste the embedded
 `codex-theme-v1:` string into Settings → Appearance → Import for the colors.
+
+## Sponsored themes (optional)
+
+Themes come in two types via a `type` field: `standard` (default, a normal
+theme) and `sponsored` (an ad theme). A sponsored theme turns the blank-page
+Hero's three copy lines into **clickable slots that open an advertiser's link**
+in the system browser, with an optional "Sponsored" disclosure badge.
+
+- **The default is always standard** — a sponsored theme is created only on an
+  explicit signal (the word 广告 / 赞助 / sponsored, or `$theme-x sponsor …`), so
+  normal users are never affected.
+- **Open to everyone**: the build flow is the same as a normal theme, you just
+  also supply the copy and the jump links.
+- **The line vs. adware**: links fire only on an explicit click on a clearly
+  marked slot — never auto/hover, never the whole Hero as a hot zone; metrics
+  stay local and count impressions/clicks only (never link content, screen, or
+  keystrokes). Upload is off by default and, when configured, happens only at
+  three event-driven moments — buffer full (10 events), a graceful app exit,
+  and next-launch catch-up — never on a timer.
+- **Still usable after budget exhaustion**: the platform returns Campaign state
+  with the next upload response. The theme keeps its appearance, marks the Hero
+  as ended/no longer earning, and stops new ad impression metering and jumps.
+- **Shares the same way**: a sponsored pack is the same `.codextheme` format and
+  imports identically.
 
 macOS first; Windows is on the roadmap.
 

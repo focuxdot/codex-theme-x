@@ -4,11 +4,10 @@
 # opening Codex normally causes one controlled relaunch with a loopback-only
 # debug port, followed by background injection.
 #
-# Event-driven by default — NO resident process. launchd watches the app's
-# Singleton files (Electron rewrites them at every launch); each launch/quit
-# spawns one short-lived check that exits immediately when there is nothing
-# to do. Falls back to the legacy resident poller only if the app's user-data
-# dir can't be found.
+# A lightweight resident bridge checks only for the renderer's one-shot flush
+# flag. It never uploads on a timer: without a buffer-full / normal-exit flag,
+# the check is a no-op. Keeping the bridge resident is required because
+# launchd filesystem watches do not observe localStorage writes.
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
@@ -16,23 +15,6 @@ LABEL="com.codex-theme-x.keeper"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 NODE="$(find_node)"
 mkdir -p "$CTX_HOME" "$HOME/Library/LaunchAgents"
-
-USER_DATA_DIR="$HOME/Library/Application Support/Codex"
-if [ -d "$USER_DATA_DIR" ]; then
-  MODE_ARGS="    <string>--oneshot</string>"
-  MODE_KEYS="  <key>KeepAlive</key><false/>
-  <key>ThrottleInterval</key><integer>5</integer>
-  <key>WatchPaths</key>
-  <array>
-    <string>$USER_DATA_DIR/SingletonCookie</string>
-    <string>$USER_DATA_DIR/ChromeFeatureState</string>
-  </array>"
-  MODE_DESC="event-driven (zero resident cost)"
-else
-  MODE_ARGS=""
-  MODE_KEYS="  <key>KeepAlive</key><true/>"
-  MODE_DESC="resident fallback (user-data dir not found)"
-fi
 
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,7 +26,6 @@ cat > "$PLIST" <<PLIST
   <array>
     <string>$NODE</string>
     <string>$SCRIPT_DIR/keeper.mjs</string>
-$MODE_ARGS
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -52,7 +33,8 @@ $MODE_ARGS
     <key>CTX_PORT</key><string>$CTX_PORT</string>
   </dict>
   <key>RunAtLoad</key><true/>
-$MODE_KEYS
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
   <key>StandardOutPath</key><string>$CTX_HOME/keeper.log</string>
   <key>StandardErrorPath</key><string>$CTX_HOME/keeper.log</string>
 </dict>
@@ -61,4 +43,4 @@ PLIST
 
 launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
-echo "keeper installed, $MODE_DESC ($PLIST); applied image themes will auto-restore after normal Codex launches"
+echo "keeper installed, resident event bridge ($PLIST); applied image themes will auto-restore and flush explicit ad signals"

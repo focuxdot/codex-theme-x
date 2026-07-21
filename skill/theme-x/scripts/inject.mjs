@@ -16,23 +16,29 @@
 //   node inject.mjs tune     --set dim=0.8 [--set blur=24] ...
 //   node inject.mjs remove
 //   node inject.mjs screenshot --out /tmp/shot.png
+//   node inject.mjs events [--clear] [--json]
+//   node inject.mjs flush-signal          (keeper bridge: read+clear flush flag)
+//   node inject.mjs report [--json]       (upload buffered ad events)
 //
 // Requires Node >= 22 (global WebSocket). Zero dependencies.
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, stat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const PAYLOAD_VERSION = 9;
+const PAYLOAD_VERSION = 12;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const IMAGE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.webp': 'image/webp', '.svg': 'image/svg+xml',
 };
+const DISTRIBUTION_FILE = 'adsmarket-distribution.json';
+const BENEFICIARY_RE = /^[a-zA-Z0-9_-]{1,128}$/;
 
 function parseArgs(argv) {
   const [cmd, ...rest] = argv;
-  const opts = { port: 9341, set: [], json: false, accent: true };
+  const opts = { port: 9341, set: [], json: false, accent: true, clear: false };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === '--port') opts.port = Number(rest[++i]);
@@ -41,6 +47,7 @@ function parseArgs(argv) {
     else if (a === '--out') opts.out = rest[++i];
     else if (a === '--json') opts.json = true;
     else if (a === '--no-accent') opts.accent = false;
+    else if (a === '--clear') opts.clear = true;
     else fail(`unknown option: ${a}`);
   }
   return { cmd, opts };
@@ -172,6 +179,70 @@ function optionalThemeText(value, maxLength) {
   return text ? text.slice(0, maxLength) : null;
 }
 
+// Sponsor links are platform-signed and must resolve to a real web page.
+// Anything that isn't a plain http(s) URL is dropped (the slot's copy stays,
+// but non-clickable) — no javascript:, data:, app:, or custom schemes.
+function safeSponsorUrl(value) {
+  if (value == null) return null;
+  try {
+    const u = new URL(String(value).trim());
+    return (u.protocol === 'https:' || u.protocol === 'http:') ? u.href : null;
+  } catch { return null; }
+}
+
+function parseSponsorSlot(slot, maxLength) {
+  if (!slot || typeof slot !== 'object') return null;
+  const text = optionalThemeText(slot.text, maxLength);
+  if (!text) return null; // no copy → the slot simply isn't rendered
+  return { text, url: safeSponsorUrl(slot.url) };
+}
+
+// Optional advertising layer for the blank-page Hero. Each of the three copy
+// slots may carry { text, url }; a slot with a valid url becomes a clickable
+// link (verified system-browser jump), a slot without one is plain copy. The
+// disclosure badge is optional and OFF by default — a platform can sign a
+// non-empty `disclosure` string to force one on the kicker.
+function parseSponsor(sponsor) {
+  if (!sponsor || typeof sponsor !== 'object') return null;
+  const slots = sponsor.slots ?? {};
+  const parsed = {
+    kicker: parseSponsorSlot(slots.kicker, 40),
+    greeting: parseSponsorSlot(slots.greeting, 80),
+    tagline: parseSponsorSlot(slots.tagline, 96),
+  };
+  if (!parsed.kicker && !parsed.greeting && !parsed.tagline) return null;
+  return {
+    // Campaign id — platform-signed; rides on every per-slot event for billing
+    // and attribution. Absent in the demo/self-serve case → events carry null.
+    campaign: optionalThemeText(sponsor.campaign, 64),
+    // Optional disclosure badge on the kicker. Absent = no badge; a platform
+    // that wants to force one just signs a non-empty string into the block.
+    disclosure: optionalThemeText(sponsor.disclosure, 16),
+    slots: parsed,
+  };
+}
+
+function safeAdsApiBase(value) {
+  try {
+    const url = new URL(String(value || ''));
+    return ['http:', 'https:'].includes(url.protocol) ? url.origin : null;
+  } catch { return null; }
+}
+
+async function loadDistribution(themeDir, themeId) {
+  let raw;
+  try { raw = JSON.parse(await readFile(path.join(themeDir, DISTRIBUTION_FILE), 'utf8')); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    fail(`${DISTRIBUTION_FILE}: invalid JSON`);
+  }
+  const beneficiaryUserId = String(raw?.beneficiaryUserId || '');
+  const adsApiBase = safeAdsApiBase(raw?.adsApiBase);
+  if (raw?.v !== 1 || raw?.themeId !== themeId || !BENEFICIARY_RE.test(beneficiaryUserId) || !adsApiBase)
+    fail(`${DISTRIBUTION_FILE}: invalid or mismatched adsMarket attribution`);
+  return { v: 1, beneficiaryUserId, themeId, source: raw.source === 'gallery' ? 'gallery' : null, adsApiBase };
+}
+
 function safeThemeAssetName(value, field) {
   const name = String(value ?? '');
   if (!name || path.basename(name) !== name || name === '.' || name === '..') {
@@ -180,23 +251,96 @@ function safeThemeAssetName(value, field) {
   return name;
 }
 
+// Resolve one background block into the renderer's veil/opacity vars. Called
+// once per single-mode theme, or twice (light + dark) for an auto theme.
+function resolveVars(bg) {
+  return {
+    dim: bg.dim ?? 0.85,
+    blur: bg.blur ?? 0,
+    // Default look: the conversation area is FULLY transparent — the artwork is
+    // the hero. The sidebar is dense scan-read text, so it gets a near-solid
+    // veil instead; the decisive contrast makes the panel boundary read as an
+    // intentional layer edge. Users who want more veil over the art just ask.
+    panelOpacity: bg.panelOpacity ?? 0,
+    // Sidebar = FROSTED GLASS, not a flat plate: mid-density veil + heavy
+    // backdrop blur. The artwork's colors bleed through the frost (visual unity
+    // with the page), while the frosted↔clear material step keeps the zoning
+    // unmistakable. Raise toward 0.85+ when dark busy artwork sits under a light
+    // variant (density is the readability lever; blur is the unity lever).
+    sidebarOpacity: bg.sidebarOpacity ?? 0.6,
+    sidebarBlur: bg.sidebarBlur ?? 40,
+    glassBlur: bg.glassBlur ?? 18,
+    // Floating panels (environment info, dropdowns, popovers) — they hold text
+    // over arbitrary content, so they keep a readable veil even when the main
+    // surface is fully transparent.
+    floatOpacity: bg.floatOpacity ?? 0.75,
+    // Composer frost. The app's own design is translucent glass
+    // (bg-token-input-background/90 + backdrop blur) — an electron:dark override
+    // flattens it to opaque; this restores the intent with the theme's surface
+    // color. Denser than floats: it is the typing surface, the one place
+    // readability outranks transparency.
+    composerOpacity: bg.composerOpacity ?? 0.8,
+    // Reading lane: a soft-edged surface-colored sheet behind the thread column
+    // only. Text gets near-native contrast conditions (ink over a mostly-surface
+    // backing) WITHOUT touching text rendering, and the artwork stays
+    // full-strength outside the lane. Raise toward 0.55 for dark/busy artwork
+    // under a light variant. 0 = off.
+    laneOpacity: bg.laneOpacity ?? 0.45,
+    // Legacy text glow. Users read with their habitual text rendering, so this
+    // defaults OFF — the reading lane is the readability mechanism. Kept as an
+    // explicit opt-in only.
+    textHalo: bg.textHalo ?? 0,
+  };
+}
+
 async function loadTheme(themeDir) {
   const file = path.join(themeDir, 'theme.json');
   const theme = JSON.parse(await readFile(file, 'utf8'));
   if (theme.schema !== 'codextheme/1') fail(`${file}: expected "schema": "codextheme/1"`);
+  // Two theme types. "standard" (default) is a normal personalization theme;
+  // "sponsored" is an advertising theme that carries a sponsor block and renders
+  // the clickable Hero links. type is AUTHORITATIVE: the sponsor layer renders
+  // only for a sponsored theme, so a stray sponsor block on a standard theme is
+  // ignored and can never turn a normal user's theme into an ad.
+  const type = theme.type === 'sponsored' ? 'sponsored' : 'standard';
+  const sponsor = type === 'sponsored' ? parseSponsor(theme.sponsor) : null;
+  if (type === 'sponsored' && !sponsor) {
+    fail(`${file}: type "sponsored" requires a "sponsor" block with at least one slot (text + optional url)`);
+  }
   const bg = theme.background ?? {};
   const home = theme.home ?? {};
   if (!bg.file) fail(`${file}: background.file is required`);
+
+  // Color mode. "dark"/"light" = a single-mode pack (one palette, one chrome
+  // table). "auto" = a dual-mode pack carrying BOTH palettes + per-mode veil
+  // densities in a `modes` block; it follows the user's light/dark mode with no
+  // re-apply. Anything else falls back to a single dark pack.
+  const isAuto = theme.variant === 'auto' && theme.modes && theme.modes.light && theme.modes.dark;
+  const variant = isAuto ? 'auto' : (theme.variant === 'light' ? 'light' : 'dark');
+  // Effective background vars for a mode = top-level background merged with the
+  // mode's own overrides (image + blurs live at the top level and are shared).
+  const modeBg = (m) => (isAuto ? { ...bg, ...(theme.modes[m].background ?? {}) } : bg);
+  const modeOfficial = (m) => (isAuto ? (theme.modes[m].official ?? {}) : (theme.official ?? {}));
+  const surfaceOf = (m) => modeOfficial(m).surface ?? '#181818';
+  const accentOf = (m) => modeOfficial(m).accent ?? null;
+  // Seed the static CSS from the dark set (auto) or the single palette; the
+  // renderer's syncMode overrides every mode-dependent var on inject anyway.
+  const seed = isAuto ? 'dark' : variant;
+
   const backgroundFile = safeThemeAssetName(bg.file, 'background.file');
   const homeFile = home.file ? safeThemeAssetName(home.file, 'home.file') : backgroundFile;
   const backgroundDataUrl = await imageDataUrl(path.join(themeDir, backgroundFile));
   const homeDataUrl = homeFile === backgroundFile
     ? backgroundDataUrl
     : await imageDataUrl(path.join(themeDir, homeFile));
+  const themeId = String(theme.id ?? theme.name ?? path.basename(themeDir));
+  const distribution = type === 'sponsored' ? await loadDistribution(themeDir, themeId) : null;
   return {
     name: String(theme.name ?? theme.id ?? 'unnamed'),
-    surface: theme.official?.surface ?? '#181818',
-    accent: theme.official?.accent ?? null,
+    // Stable id used as the event `theme` field (handoff: theme = 主题 id).
+    id: themeId,
+    surface: surfaceOf(seed),
+    accent: accentOf(seed),
     backgroundDataUrl,
     home: {
       dataUrl: homeDataUrl,
@@ -230,44 +374,19 @@ async function loadTheme(themeDir) {
       // Window title (Mission Control / cmd-tab flavor).
       title: optionalThemeText(theme.copy?.title, 48),
     },
-    vars: {
-      dim: bg.dim ?? 0.85,
-      blur: bg.blur ?? 0,
-      // Default look: the conversation area is FULLY transparent — the
-      // artwork is the hero. The sidebar is dense scan-read text, so it gets
-      // a near-solid veil instead; the decisive contrast makes the panel
-      // boundary read as an intentional layer edge. Users who want more veil
-      // over the art just ask ($theme tune).
-      panelOpacity: bg.panelOpacity ?? 0,
-      // Sidebar = FROSTED GLASS, not a flat plate: mid-density veil + heavy
-      // backdrop blur. The artwork's colors bleed through the frost (visual
-      // unity with the page), while the frosted↔clear material step keeps the
-      // zoning unmistakable. Raise toward 0.85+ when dark busy artwork sits
-      // under a light variant (density is the readability lever; blur is the
-      // unity lever).
-      sidebarOpacity: bg.sidebarOpacity ?? 0.6,
-      sidebarBlur: bg.sidebarBlur ?? 40,
-      glassBlur: bg.glassBlur ?? 18,
-      // Floating panels (environment info, dropdowns, popovers) — they hold
-      // text over arbitrary content, so they keep a readable veil even when
-      // the main surface is fully transparent.
-      floatOpacity: bg.floatOpacity ?? 0.75,
-      // Composer frost. The app's own design is translucent glass
-      // (bg-token-input-background/90 + backdrop blur) — an electron:dark
-      // override flattens it to opaque; this restores the intent with the
-      // theme's surface color. Denser than floats: it is the typing surface,
-      // the one place readability outranks transparency.
-      composerOpacity: bg.composerOpacity ?? 0.8,
-      // Reading lane: a soft-edged surface-colored sheet behind the thread
-      // column only. Text gets near-native contrast conditions (ink over a
-      // mostly-surface backing) WITHOUT touching text rendering, and the
-      // artwork stays full-strength outside the lane. Raise toward 0.55 for
-      // dark/busy artwork under a light variant. 0 = off.
-      laneOpacity: bg.laneOpacity ?? 0.45,
-      // Legacy text glow. Users read with their habitual text rendering, so
-      // this defaults OFF — the reading lane is the readability mechanism.
-      // Kept as an explicit opt-in only.
-      textHalo: bg.textHalo ?? 0,
+    type,
+    sponsor,
+    distribution,
+    variant,
+    // Seed vars = the current-mode (dark for auto) set; the static CSS uses it
+    // only until the renderer's syncMode kicks in on inject.
+    vars: resolveVars(modeBg(seed)),
+    // Per-mode veil densities + accent, swapped live by syncMode on every
+    // light/dark flip. For a single-mode theme both entries are identical, so
+    // the swap is a no-op and behavior is unchanged.
+    modeVars: {
+      light: { vars: resolveVars(modeBg('light')), accent: accentOf('light') },
+      dark: { vars: resolveVars(modeBg('dark')), accent: accentOf('dark') },
     },
   };
 }
@@ -636,6 +755,88 @@ function buildCss(theme) {
     0 0 8px rgba(var(--ctx-surface-rgb), calc(var(--ctx-halo) * 0.85)),
     0 1px 16px rgba(var(--ctx-surface-rgb), calc(var(--ctx-halo) * 0.6));
 }
+/* ---- Sponsored Hero slots -------------------------------------------------
+   Only live when a sponsor block is present (the .ctx-sponsored / .ctx-sponsor-hero
+   hooks are added by the renderer). The three native slots — kicker (::before),
+   greeting (child span), tagline (::after) — are pseudo-elements/text and can't
+   host a link, so the renderer replaces them with real, individually clickable
+   elements. Two red lines (jump-feasibility.md 跳转落地设计): a linked slot must
+   LOOK clickable (accent + hover underline + ↗) and only navigate on an explicit
+   click (never auto/hover, the whole Hero is never a hot zone); the disclosure
+   badge is platform-rendered and cannot be removed by advertiser copy. */
+:root.ctx-themed [data-feature="game-source"].ctx-sponsored { align-items: flex-start !important; }
+:root.ctx-themed [data-feature="game-source"].ctx-sponsored > span { display: none !important; }
+:root.ctx-themed [data-feature="game-source"].ctx-sponsored::before,
+:root.ctx-themed [data-feature="game-source"].ctx-sponsored::after { content: none !important; }
+:root.ctx-themed .ctx-sponsor-hero {
+  display: flex; flex-direction: column; align-items: flex-start;
+  width: 100%; text-align: left;
+}
+:root.ctx-themed .ctx-hero-slot {
+  display: block; max-width: 100%; text-decoration: none; color: inherit;
+}
+:root.ctx-themed .ctx-hero-kicker {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 10px;
+  color: var(--codex-base-accent, ${theme.accent ?? heroInk});
+  font-size: 12px; line-height: 1.35; font-weight: 800; letter-spacing: 0.1em;
+}
+:root.ctx-themed .ctx-hero-greeting {
+  color: var(--ctx-hero-ink);
+  font-size: clamp(21px, 2.1vw, 31px); line-height: 1.22; font-weight: 760;
+  text-shadow: 0 2px 18px rgba(var(--ctx-hero-shade), 0.42);
+}
+:root.ctx-themed .ctx-hero-tagline {
+  margin-top: 13px; color: var(--ctx-hero-muted);
+  font-size: 13px; line-height: 1.5; font-weight: 500; letter-spacing: 0.02em;
+}
+/* Platform-forced disclosure badge — rides on the kicker, advertiser can't suppress it. */
+:root.ctx-themed .ctx-hero-badge {
+  display: inline-block; padding: 2px 7px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ctx-hero-ink);
+  background: rgba(var(--ctx-surface-rgb), 0.55);
+  border: 1px solid var(--ctx-hairline);
+}
+/* Link affordance: only slots carrying a URL look and behave clickable. */
+:root.ctx-themed .ctx-hero-link { cursor: pointer; }
+:root.ctx-themed .ctx-hero-link:hover .ctx-hero-label {
+  text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px;
+}
+/* The ↗ jump marker rides only on the tagline; the other linked slots signal
+   clickability through the hover underline + pointer alone. */
+:root.ctx-themed .ctx-hero-link.ctx-hero-tagline .ctx-hero-label::after {
+  content: " ↗"; font-size: 0.82em; opacity: 0.7;
+}
+/* Campaign exhaustion is a quiet, persistent Hero state — never a modal or
+   system notification. Keep the artwork and original copy, but make it clear
+   that the installed theme no longer earns and disable advertiser navigation. */
+:root.ctx-themed .ctx-campaign-state {
+  display: none; align-items: center; flex-wrap: wrap; gap: 7px 10px;
+  margin-top: 15px; padding: 8px 10px; border-radius: 10px;
+  color: var(--ctx-hero-muted); background: rgba(var(--ctx-surface-rgb), 0.52);
+  border: 1px solid var(--ctx-hairline); backdrop-filter: blur(12px);
+  font-size: 11px; line-height: 1.4;
+}
+:root.ctx-themed .ctx-sponsor-hero.ctx-campaign-ended .ctx-campaign-state { display: flex; }
+:root.ctx-themed .ctx-campaign-ended .ctx-hero-link {
+  cursor: default; opacity: 0.62;
+}
+:root.ctx-themed .ctx-campaign-ended .ctx-hero-link:hover .ctx-hero-label {
+  text-decoration: none;
+}
+:root.ctx-themed .ctx-campaign-ended .ctx-hero-link.ctx-hero-tagline .ctx-hero-label::after {
+  content: none;
+}
+:root.ctx-themed .ctx-campaign-state-badge {
+  color: var(--ctx-hero-ink); font-weight: 760;
+}
+:root.ctx-themed .ctx-campaign-state-action {
+  appearance: none; border: 0; padding: 0; background: transparent;
+  color: var(--codex-base-accent, ${theme.accent ?? heroInk});
+  cursor: pointer; font: inherit; font-weight: 700;
+}
+:root.ctx-themed .ctx-campaign-state-action:hover { text-decoration: underline; text-underline-offset: 3px; }
+
 ${theme.copy.placeholder ? `
 /* Themed composer placeholder. The native placeholder is painted by CSS
    (p[data-placeholder]::after, content from the attribute) — overriding the
@@ -651,10 +852,32 @@ ${theme.copy.placeholder ? `
 // The renderer-side program. Self-contained; injected via Runtime.evaluate.
 // Uses adoptedStyleSheets (immune to style-src CSP) and stores handles on
 // window.__ctxTheme so apply is idempotent and remove is complete.
-function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, name, copy }) {
+function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, name, copy, sponsor, distribution, themeId, modeVars }) {
+  // Per-mode CSS-var maps swapped live by syncMode on every light/dark flip.
+  // sidebar/lane/dim/panel are NOT scaled by veil-scale, so a per-mode value is
+  // their only control; float/composer keep the existing veil-scale
+  // compensation (seeded from the dark set) and are intentionally not swapped.
+  const modeCssVars = (mv) => {
+    if (!mv) return null;
+    const o = {
+      '--ctx-dim': String(mv.vars.dim),
+      '--ctx-blur': mv.vars.blur + 'px',
+      '--ctx-panel-a': String(mv.vars.panelOpacity),
+      '--ctx-side-a': String(mv.vars.sidebarOpacity),
+      '--ctx-side-blur': mv.vars.sidebarBlur + 'px',
+      '--ctx-glass-blur': mv.vars.glassBlur + 'px',
+      '--ctx-lane-a': String(mv.vars.laneOpacity),
+      '--ctx-halo': String(mv.vars.textHalo),
+    };
+    if (mv.accent) o['--ctx-accent-rgb'] = hexToRgbTriplet(mv.accent);
+    return o;
+  };
+  const modeVarsJson = JSON.stringify({ light: modeCssVars(modeVars?.light), dark: modeCssVars(modeVars?.dark) });
   return `(() => {
   const prev = window.__ctxTheme;
-  if (prev) { try { prev.remove(); } catch {} }
+  // Pass the incoming theme id so the OUTGOING ad payload can tell a real switch
+  // (emit switch_away) from an idempotent re-apply of the same theme (no event).
+  if (prev) { try { prev.remove({ next: ${JSON.stringify(themeId ?? null)} }); } catch {} }
 
   const root = document.documentElement;
   const createArtUrl = (dataUrl) => {
@@ -753,11 +976,18 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     probe.remove();
     return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
   };
+  // Per-mode veil densities + accent for an auto (dual-mode) theme. For a
+  // single-mode theme both entries are identical, so the swap is a no-op; when
+  // modeVars was not supplied at all, both are null and the swap is skipped.
+  const MODE_VARS = ${modeVarsJson};
   const syncMode = () => {
     const s = sampleSurface();
     if (!s) return; // token missing → keep theme.json values
     const dark = (0.2126 * s[0] + 0.7152 * s[1] + 0.0722 * s[2]) / 255 < 0.5;
     applyVar('--ctx-surface-rgb', s.join(', '));
+    // Swap the mode-specific densities/accent (sidebar/lane/dim/panel + accent).
+    const mv = dark ? MODE_VARS.dark : MODE_VARS.light;
+    if (mv) for (const k in mv) applyVar(k, mv[k]);
     applyVar('--ctx-hairline', dark ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.09)');
     applyVar('--ctx-cover-shadow', dark ? 'rgba(0,0,0,0.35)' : 'rgba(0,0,0,0.14)');
     applyVar('--ctx-hero-ink', dark ? 'rgba(255,255,255,0.96)' : 'rgba(20,22,24,0.94)');
@@ -829,11 +1059,334 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     runCopy();
   }
 
+  // Sponsor Hero: render the three Hero copy lines (kicker / greeting /
+  // tagline) as real, individually clickable elements. jump-feasibility.md
+  // verified on a live Codex that a renderer window.open(url,'_blank') routes
+  // through Electron's deny+openExternal handler and opens the SYSTEM browser —
+  // so a plain click on an injected anchor navigates out, with no host bridge.
+  // The native slots are pseudo-elements/text (::before kicker, child span
+  // greeting, ::after tagline) which cannot host a link, so we replace them.
+  const sponsor = ${JSON.stringify(sponsor ?? null)};
+  const beneficiaryUserId = ${JSON.stringify(distribution?.beneficiaryUserId ?? null)};
+  const themeId = ${JSON.stringify(themeId ?? name)};
+  const initialGalleryUrl = ${JSON.stringify(distribution?.adsApiBase ?? null)};
+  let sponsorObserver = null, sponsorTimer = 0, sponsorIO = null;
+
+  // --- ad-theme metering (impression-feasibility.md, two-stage §三) ----------
+  // The ENTIRE metering + buffer subsystem lives behind sponsor: a standard
+  // theme's payload runs none of it (zero events, zero markers, zero upload).
+  // Events buffer to localStorage — page-in-app fetch is CSP-blocked, so the
+  // host side collects the buffer out of band (inject.mjs report / keeper hook).
+  // Privacy death-line: field whitelist {s,t,type,slot,campaign,theme,beneficiary} only —
+  // never URL content, screen content, or keystrokes.
+  const AD_KEY = '__ctxAdEvents';
+  const AD_DAY_KEY = '__ctxAdActiveDay';
+  const AD_CAMPAIGN_KEY = '__ctxAdCampaignStates';
+  const AD_CAP = 10; // at most one upload batch; when full, drop NEW (never overwrite unconfirmed)
+  const readAdStore = () => { try { return JSON.parse(localStorage.getItem(AD_KEY)) || null; } catch { return null; } };
+  const readCampaignStore = () => { try {
+    const value = JSON.parse(localStorage.getItem(AD_CAMPAIGN_KEY));
+    return value && typeof value === 'object' ? value : { v: 1, campaigns: {}, galleryUrl: initialGalleryUrl };
+  } catch { return { v: 1, campaigns: {}, galleryUrl: initialGalleryUrl }; } };
+  let campaignStore = readCampaignStore();
+  if (!campaignStore.campaigns || typeof campaignStore.campaigns !== 'object') campaignStore.campaigns = {};
+  let campaignEnded = Boolean(sponsor && sponsor.campaign && campaignStore.campaigns[sponsor.campaign]?.status === 'exhausted');
+  let campaignGalleryUrl = (/^https?:\\/\\//i.test(String(campaignStore.galleryUrl || ''))
+    ? String(campaignStore.galleryUrl) : initialGalleryUrl);
+  // RFC 4122 v4, always. crypto.randomUUID is the fast path; older WebViews
+  // fall back to getRandomValues, then (last resort) Math.random — still
+  // formatted as a standard UUID, since the platform rejects anything else.
+  const ctxRandomUuid = () => {
+    const c = self.crypto;
+    if (c && typeof c.randomUUID === 'function') return c.randomUUID();
+    const b = new Uint8Array(16);
+    if (c && typeof c.getRandomValues === 'function') c.getRandomValues(b);
+    else for (let i = 0; i < 16; i++) b[i] = Math.floor(Math.random() * 256);
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // variant 10
+    const hex = [...b].map((v) => v.toString(16).padStart(2, '0')).join('');
+    return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+  };
+  const ensureAdStore = () => {
+    let s = readAdStore();
+    if (!s || typeof s !== 'object') s = { v: 1, installId: null, seq: 0, events: [] };
+    // Tolerate a partially-written / tampered store so the writer never wedges.
+    if (!Array.isArray(s.events)) s.events = [];
+    if (typeof s.seq !== 'number') s.seq = 0;
+    if (!s.installId) s.installId = ctxRandomUuid();
+    return s;
+  };
+  const pushAdEvent = (build) => {
+    try {
+      const s = ensureAdStore();
+      // Full & unconfirmed → drop the new event, but persist (keeps a freshly
+      // minted installId). Never evict older unconfirmed events. Re-arm the
+      // flush signal: if a previous report failed after the keeper consumed
+      // the flag, this keeps "buffer is full" observable without a timer —
+      // each new push attempt re-asserts the one-shot signal.
+      if (s.events.length >= AD_CAP) {
+        localStorage.setItem(AD_KEY, JSON.stringify(s));
+        if (!localStorage.getItem(AD_FLUSH_KEY)) signalAdFlush('buffer-full');
+        return;
+      }
+      s.seq += 1; // monotonic, never reused → server dedupe key
+      s.events.push(build(s.seq)); // build() returns an object with ONLY whitelisted keys
+      localStorage.setItem(AD_KEY, JSON.stringify(s));
+      // Event-driven flush signal #1 (handoff §4): the 10th event asks the host
+      // for one immediate report. The flag is read-and-cleared by the keeper's
+      // CDP probe; the console line is the controlled renderer→host marker.
+      if (s.events.length === AD_CAP) signalAdFlush('buffer-full');
+    } catch {}
+  };
+  const AD_FLUSH_KEY = '__ctxAdFlush';
+  // One signal = one upload. Coalescing repeat signals for the same cause is
+  // correct: they all mean "the same unconfirmed batch is still waiting".
+  const signalAdFlush = (reason) => {
+    try { localStorage.setItem(AD_FLUSH_KEY, JSON.stringify({ reason: reason, t: Date.now() })); } catch {}
+    try { console.log('__CTX_AD_FLUSH__:' + reason); } catch {}
+  };
+  // impression / click carry slot + campaign; active_day / switch_away are
+  // theme-level. Each builder emits exactly its allowed key set (whitelist by
+  // construction — an extra key makes the platform reject the whole batch).
+  const recordSlotEvent = (type, slot) => {
+    if (campaignEnded) return;
+    pushAdEvent((seq) => {
+    const event = { s: seq, t: Date.now(), type: type, slot: slot,
+      campaign: (sponsor && sponsor.campaign) || null, theme: themeId };
+    if (beneficiaryUserId) event.beneficiary = beneficiaryUserId;
+    return event;
+    });
+  };
+  const recordThemeEvent = (type, theme) => pushAdEvent((seq) => ({
+    s: seq, t: Date.now(), type: type, theme: theme,
+  }));
+
+  const openSponsor = (url) => { try { window.open(url, '_blank', 'noopener'); } catch {} };
+
+  // L3-per-slot impression gate: hero present × window focused × slot ≥50%
+  // visible × dwell ≥1s → one impression per view session (re-arms on re-entry).
+  // Only-count-less-never-more: any gate failing just withholds the event.
+  const slotState = new WeakMap();
+  // "Already counted this view" is tracked per slot KIND, not per element, so a
+  // React rebuild of the hero (which swaps in fresh elements) can't re-count an
+  // uninterrupted view. A kind resets only on a genuine scroll-away (its live
+  // element drops <50% visible WHILE still connected), never on the detach a
+  // rebuild causes — that keeps impressions on the "count-less-never-more" side.
+  const slotCounted = { kicker: false, greeting: false, tagline: false };
+  const heroPresent = () => Boolean(document.querySelector('section[class*="home-suggestions"]'));
+  const evalSlot = (el) => {
+    const st = slotState.get(el);
+    if (!st) return;
+    if (campaignEnded) {
+      st.armed = false;
+      clearTimeout(st.timer);
+      return;
+    }
+    const eligible = st.visible && document.hasFocus() && heroPresent();
+    if (eligible && !st.armed) {
+      st.armed = true;
+      st.timer = setTimeout(() => {
+        if (st.visible && document.hasFocus() && heroPresent() && !slotCounted[st.kind]) {
+          slotCounted[st.kind] = true;
+          recordSlotEvent('impression', st.kind);
+        }
+      }, 1000);
+    } else if (!eligible) {
+      st.armed = false;
+      clearTimeout(st.timer);
+      // Reset for a fresh impression only on a REAL scroll-away: the element is
+      // still in the DOM but no longer visible. A detached element (hero rebuilt)
+      // must NOT reset, or its replacement would double-count the same view.
+      if (!st.visible && document.contains(el)) slotCounted[st.kind] = false;
+    }
+  };
+  const reEvalSlots = () => { for (const el of document.querySelectorAll('.ctx-hero-slot')) evalSlot(el); };
+  if (sponsor) {
+    sponsorIO = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const st = slotState.get(e.target);
+        if (!st) continue;
+        st.visible = e.intersectionRatio >= 0.5;
+        evalSlot(e.target);
+      }
+    }, { threshold: [0, 0.5, 1] });
+  }
+
+  const buildSponsorSlot = (kind, slot) => {
+    const linked = Boolean(slot && slot.url);
+    const el = document.createElement(linked ? 'a' : 'span');
+    el.className = 'ctx-hero-slot ctx-hero-' + kind + (linked ? ' ctx-hero-link' : '');
+    el.setAttribute('data-ctx-slot', kind);
+    if (linked) {
+      el.href = slot.url; el.target = '_blank'; el.rel = 'noreferrer';
+      el.addEventListener('click', (e) => {
+        // Navigate ONLY on an explicit click on a clearly-linked slot — never
+        // auto/hover. preventDefault stops the app's in-app navigation; the
+        // openSponsor call is the verified system-browser route.
+        e.preventDefault(); e.stopPropagation();
+        if (campaignEnded) return;
+        recordSlotEvent('click', kind);
+        openSponsor(slot.url);
+      });
+    }
+    if (kind === 'kicker' && sponsor.disclosure) {
+      const badge = document.createElement('span');
+      badge.className = 'ctx-hero-badge';
+      badge.textContent = sponsor.disclosure;
+      el.appendChild(badge);
+    }
+    const label = document.createElement('span');
+    label.className = 'ctx-hero-label';
+    label.textContent = (slot && slot.text) || '';
+    el.appendChild(label);
+    slotState.set(el, { kind: kind, visible: false, armed: false, timer: 0 });
+    if (sponsorIO) sponsorIO.observe(el);
+    return el;
+  };
+  const campaignCopy = () => {
+    const lang = String(document.documentElement.lang || (typeof navigator !== 'undefined' ? navigator.language : '') || '').toLowerCase();
+    return lang.startsWith('zh')
+      ? { badge: '投放已结束', detail: '此主题后续曝光不再产生收益', action: '更换可收益主题 →' }
+      : { badge: 'Campaign ended', detail: 'Future impressions from this theme will not earn revenue', action: 'Choose an earning theme →' };
+  };
+  const ensureCampaignState = (box) => {
+    let state = box.querySelector(':scope > .ctx-campaign-state');
+    if (state) return state;
+    const copy = campaignCopy();
+    state = document.createElement('div');
+    state.className = 'ctx-campaign-state';
+    state.setAttribute('role', 'status');
+    const badge = document.createElement('span');
+    badge.className = 'ctx-campaign-state-badge';
+    badge.textContent = copy.badge;
+    const detail = document.createElement('span');
+    detail.className = 'ctx-campaign-state-detail';
+    detail.textContent = copy.detail;
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'ctx-campaign-state-action';
+    action.textContent = copy.action;
+    action.addEventListener('click', (event) => {
+      event.preventDefault(); event.stopPropagation();
+      if (campaignGalleryUrl) openSponsor(String(campaignGalleryUrl).replace(/\\\/+$/, '') + '/');
+    });
+    state.appendChild(badge);
+    state.appendChild(detail);
+    state.appendChild(action);
+    box.appendChild(state);
+    return state;
+  };
+  const syncCampaignState = () => {
+    const box = document.querySelector('.ctx-sponsor-hero');
+    if (!box || !sponsor) return;
+    if (campaignEnded) box.classList.add('ctx-campaign-ended');
+    else box.classList.remove('ctx-campaign-ended');
+    ensureCampaignState(box);
+    for (const el of box.querySelectorAll('.ctx-hero-link')) {
+      const kind = el.getAttribute('data-ctx-slot');
+      const url = sponsor.slots?.[kind]?.url;
+      if (campaignEnded) {
+        el.removeAttribute('href');
+        el.setAttribute('aria-disabled', 'true');
+        el.setAttribute('tabindex', '-1');
+      } else if (url) {
+        el.setAttribute('href', url);
+        el.removeAttribute('aria-disabled');
+        el.removeAttribute('tabindex');
+      }
+      const st = slotState.get(el);
+      if (campaignEnded && st) { st.armed = false; clearTimeout(st.timer); }
+    }
+    if (!campaignEnded) reEvalSlots();
+  };
+  const updateCampaignStates = (states, galleryUrl) => {
+    if (!sponsor || !Array.isArray(states)) return;
+    const store = readCampaignStore();
+    if (!store.campaigns || typeof store.campaigns !== 'object') store.campaigns = {};
+    for (const state of states) {
+      if (!state || typeof state.campaign !== 'string' || typeof state.status !== 'string') continue;
+      store.campaigns[state.campaign] = {
+        status: state.status,
+        earning: state.earning === true,
+        updatedAt: Date.now(),
+      };
+    }
+    if (/^https?:\\/\\//i.test(String(galleryUrl || ''))) store.galleryUrl = String(galleryUrl).replace(/\\\/+$/, '');
+    store.v = 1;
+    try { localStorage.setItem(AD_CAMPAIGN_KEY, JSON.stringify(store)); } catch {}
+    campaignStore = store;
+    campaignGalleryUrl = store.galleryUrl || campaignGalleryUrl;
+    campaignEnded = Boolean(sponsor.campaign && store.campaigns[sponsor.campaign]?.status === 'exhausted');
+    syncCampaignState();
+  };
+  const buildSponsorHero = () => {
+    const gs = document.querySelector('[data-feature="game-source"]');
+    if (!gs || gs.querySelector(':scope > .ctx-sponsor-hero')) return;
+    gs.classList.add('ctx-sponsored');
+    const box = document.createElement('div');
+    box.className = 'ctx-sponsor-hero';
+    for (const kind of ['kicker', 'greeting', 'tagline']) {
+      if (sponsor.slots[kind]) box.appendChild(buildSponsorSlot(kind, sponsor.slots[kind]));
+    }
+    gs.insertBefore(box, gs.firstChild);
+    syncCampaignState();
+  };
+  const onPageHideFlush = () => {
+    const s = readAdStore();
+    if (s && Array.isArray(s.events) && s.events.length) signalAdFlush('normal-exit');
+  };
+  if (sponsor) {
+    // active_day: one per calendar day while an ad theme is applied (L1 applied
+    // retention signal). Fires on the day's first ad-payload load.
+    try {
+      // Local calendar day (not UTC): "applied today" should mean the user's day.
+      const now = new Date();
+      const today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+      if (localStorage.getItem(AD_DAY_KEY) !== today) {
+        recordThemeEvent('active_day', themeId);
+        localStorage.setItem(AD_DAY_KEY, today);
+      }
+    } catch {}
+    // Same settle-not-fight pattern as the copy engine: React repaints on
+    // remount and wipes our node; the observer re-inserts it (idempotent).
+    sponsorObserver = new MutationObserver(() => {
+      if (sponsorTimer) return;
+      sponsorTimer = setTimeout(() => { sponsorTimer = 0; buildSponsorHero(); }, 120);
+    });
+    sponsorObserver.observe(document.body, { childList: true, subtree: true });
+    addEventListener('focus', reEvalSlots);
+    addEventListener('blur', reEvalSlots);
+    document.addEventListener('visibilitychange', reEvalSlots);
+    // Event-driven flush signal #2 (handoff §4): a graceful page unload asks
+    // the host for one best-effort report while CDP can still read the buffer.
+    // pagehide is the reliable one; beforeunload covers older paths. Crashes
+    // and force-quits fire neither — startup catch-up owns those.
+    addEventListener('pagehide', onPageHideFlush);
+    addEventListener('beforeunload', onPageHideFlush);
+    buildSponsorHero();
+  }
+
   window.__ctxTheme = {
     version: ${PAYLOAD_VERSION},
     name: ${JSON.stringify(name)},
     setVar: applyVar,
-    remove() {
+    updateCampaignStates,
+    remove(opts) {
+      // switch_away: emitted by the AD theme's OWN teardown when leaving to a
+      // different theme (opts.next) or to native (next === null). Idempotent
+      // re-apply/tune passes the same id → no event. Standard themes never reach
+      // this branch (sponsor is null), so they emit nothing on removal either.
+      if (sponsor && opts && opts.next !== themeId) recordThemeEvent('switch_away', themeId);
+      if (sponsorObserver) sponsorObserver.disconnect();
+      clearTimeout(sponsorTimer);
+      if (sponsorIO) sponsorIO.disconnect();
+      removeEventListener('focus', reEvalSlots);
+      removeEventListener('blur', reEvalSlots);
+      document.removeEventListener('visibilitychange', reEvalSlots);
+      removeEventListener('pagehide', onPageHideFlush);
+      removeEventListener('beforeunload', onPageHideFlush);
+      for (const n of document.querySelectorAll('.ctx-sponsor-hero')) n.remove();
+      for (const n of document.querySelectorAll('.ctx-sponsored')) n.classList.remove('ctx-sponsored');
       removeEventListener('resize', onResize);
       modeQuery.removeEventListener('change', queueSync);
       modeObserver.disconnect();
@@ -874,6 +1427,62 @@ const TUNE_KEYS = {
 };
 const TUNE_PX = new Set(['blur', 'glassBlur', 'homeHeight', 'homeBackdropBlur', 'sidebarBlur']);
 
+// --- host-side upload helpers (two-stage §四) -------------------------------
+// Pure and exported so the batching/pruning logic is unit-tested without a live
+// Codex (the CDP-dependent glue lives in the report command).
+
+// Telemetry endpoint. Default OFF: no ADS_API_BASE anywhere → report is a no-op,
+// so a self-made / open-source theme never phones home. The platform build (or
+// a gallery install) supplies it via env or config.json.
+function resolveAdsApiBase(env = process.env, configJson = null) {
+  const fromEnv = typeof env?.ADS_API_BASE === 'string' ? env.ADS_API_BASE.trim() : '';
+  if (fromEnv) return safeAdsApiBase(fromEnv);
+  const fromConfig = typeof configJson?.adsApiBase === 'string' ? configJson.adsApiBase.trim() : '';
+  return fromConfig ? safeAdsApiBase(fromConfig) : null;
+}
+
+// Oldest-first by monotonic seq; at most `max` events per batch (handoff §4).
+function selectBatch(events, max = 10) {
+  return [...events].sort((a, b) => a.s - b.s).slice(0, max);
+}
+
+// Keep only events the platform hasn't acknowledged. Events created DURING an
+// upload get a higher seq than the batch, so they survive (never mis-deleted).
+function pruneConfirmed(events, batchMaxSeq) {
+  return (events ?? []).filter((e) => e.s > batchMaxSeq);
+}
+
+const CAMPAIGN_STATE_STATUSES = new Set(['pending', 'active', 'paused', 'exhausted', 'closed']);
+const CAMPAIGN_ID_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+function normalizeCampaignStates(value) {
+  if (!Array.isArray(value)) return [];
+  const states = new Map();
+  for (const item of value.slice(0, 20)) {
+    const campaign = typeof item?.campaign === 'string' ? item.campaign : '';
+    const status = typeof item?.status === 'string' ? item.status : '';
+    if (!CAMPAIGN_ID_RE.test(campaign) || !CAMPAIGN_STATE_STATUSES.has(status)) continue;
+    states.set(campaign, { campaign, status, earning: status === 'active' && item.earning === true });
+  }
+  return [...states.values()];
+}
+
+async function readAdsConfig() {
+  const home = process.env.CTX_HOME ?? path.join(os.homedir(), '.codex', 'codex-theme-x');
+  try { return JSON.parse(await readFile(path.join(home, 'config.json'), 'utf8')); }
+  catch { return null; }
+}
+
+async function rememberAdsApiBase(adsApiBase) {
+  if (!adsApiBase) return;
+  const home = process.env.CTX_HOME ?? path.join(os.homedir(), '.codex', 'codex-theme-x');
+  await mkdir(home, { recursive: true });
+  let config = {};
+  try { config = JSON.parse(await readFile(path.join(home, 'config.json'), 'utf8')); } catch {}
+  if (!config || typeof config !== 'object' || Array.isArray(config)) config = {};
+  if (config.adsApiBase === adsApiBase) return;
+  await writeFile(path.join(home, 'config.json'), JSON.stringify({ ...config, adsApiBase }, null, 2) + '\n');
+}
+
 async function main() {
   const { cmd, opts } = parseArgs(process.argv.slice(2));
 
@@ -906,10 +1515,18 @@ async function main() {
       accentRemap: opts.accent ? theme.accent : null,
       name: theme.name,
       copy: theme.copy,
+      sponsor: theme.sponsor,
+      distribution: theme.distribution,
+      themeId: theme.id,
+      modeVars: theme.modeVars,
     });
     const result = await cdp.eval(program);
     cdp.close();
-    console.log(`applied "${theme.name}" (glass containers: ${result.glassed})`);
+    await rememberAdsApiBase(theme.distribution?.adsApiBase);
+    const sponsorNote = theme.type === 'sponsored'
+      ? `, sponsored: ${Object.values(theme.sponsor.slots).filter(Boolean).length} slot(s)`
+      : '';
+    console.log(`applied "${theme.name}" (glass containers: ${result.glassed}${sponsorNote})`);
     return;
   }
 
@@ -937,7 +1554,8 @@ async function main() {
   if (cmd === 'remove') {
     const cdp = await connectToCodex(opts.port);
     if (!cdp) { console.log('Codex CDP port not reachable; nothing to remove.'); return; }
-    const removed = await cdp.eval('window.__ctxTheme ? (window.__ctxTheme.remove(), true) : false');
+    // next: null → leaving to native; an ad payload emits switch_away on teardown.
+    const removed = await cdp.eval('window.__ctxTheme ? (window.__ctxTheme.remove({ next: null }), true) : false');
     cdp.close();
     console.log(removed ? 'background removed' : 'nothing was injected');
     return;
@@ -968,10 +1586,181 @@ async function main() {
     return;
   }
 
-  fail(`unknown command "${cmd ?? ''}" (status|apply|tune|remove|screenshot)`);
+  if (cmd === 'events') {
+    // Host-side collection point of the two-stage pipeline: read (and optionally
+    // clear) the renderer's localStorage event buffer and summarize per slot.
+    const cdp = await connectToCodex(opts.port) ?? fail('Codex CDP port not reachable', 2);
+    const store = await cdp.eval(`(() => { try { return JSON.parse(localStorage.getItem('__ctxAdEvents')); } catch { return null; } })()`);
+    // Clear drains only the events (called after a successful upload). installId
+    // and the monotonic seq are preserved so identity survives across upload
+    // cycles — resetting them would break frequency-capping and server dedupe.
+    if (opts.clear) await cdp.eval(`(() => { try {
+      const s = JSON.parse(localStorage.getItem('__ctxAdEvents'));
+      if (s) { s.events = []; localStorage.setItem('__ctxAdEvents', JSON.stringify(s)); }
+    } catch {} })()`);
+    cdp.close();
+    const events = store?.events ?? [];
+    const perSlot = {};   // impression/click → per-slot CTR
+    const themeEvents = {}; // active_day/switch_away → counts
+    for (const e of events) {
+      if (e.type === 'impression' || e.type === 'click') {
+        const k = e.slot ?? 'unknown';
+        (perSlot[k] ??= { impression: 0, click: 0 })[e.type] = (perSlot[k][e.type] ?? 0) + 1;
+      } else {
+        themeEvents[e.type] = (themeEvents[e.type] ?? 0) + 1;
+      }
+    }
+    const summary = {
+      installId: store?.installId ?? null,
+      total: events.length,
+      slots: Object.fromEntries(Object.entries(perSlot).map(([k, v]) => {
+        const ctr = v.impression ? +(v.click / v.impression).toFixed(3) : null;
+        return [k, { ...v, ctr }];
+      })),
+      theme: themeEvents,
+      cleared: opts.clear,
+    };
+    if (opts.json) { console.log(JSON.stringify(summary)); return; }
+    console.log(`install ${summary.installId ?? '(none)'} · ${summary.total} events${opts.clear ? ' (buffer cleared)' : ''}`);
+    for (const [slot, v] of Object.entries(summary.slots)) {
+      console.log(`  ${slot.padEnd(9)} impressions=${v.impression}  clicks=${v.click}  ctr=${v.ctr ?? '—'}`);
+    }
+    for (const [type, n] of Object.entries(summary.theme)) {
+      console.log(`  ${type.padEnd(12)} ${n}`);
+    }
+    if (!Object.keys(summary.slots).length && !Object.keys(summary.theme).length) {
+      console.log('  no events yet');
+    }
+    return;
+  }
+
+  if (cmd === 'flush-signal') {
+    // The keeper's event-driven flush bridge, host end: atomically read-and-
+    // clear the renderer's one-shot flush flag and print it as JSON (null when
+    // no signal is pending). Deliberately a FIXED probe — not a general eval —
+    // so the host's only renderer read beyond events/report is this one flag.
+    const cdp = await connectToCodex(opts.port) ?? fail('Codex CDP port not reachable', 2);
+    const value = await cdp.eval(`(() => { try {
+      const k = '__ctxAdFlush';
+      const raw = localStorage.getItem(k);
+      if (!raw) return null;
+      localStorage.removeItem(k);
+      return JSON.parse(raw);
+    } catch { return null; } })()`);
+    cdp.close();
+    console.log(JSON.stringify(value ?? null));
+    return;
+  }
+
+  if (cmd === 'report') {
+    // Host-side leg of the two-stage pipeline: read the renderer's localStorage
+    // buffer, POST batches to /api/ingest, and prune only what the platform
+    // acknowledged. Default OFF: no ADS_API_BASE → no-op (privacy default).
+    const base = resolveAdsApiBase(process.env, await readAdsConfig());
+    if (!base) {
+      const msg = 'telemetry disabled (no ADS_API_BASE); nothing uploaded';
+      console.log(opts.json ? JSON.stringify({ disabled: true, uploaded: 0 }) : msg);
+      return;
+    }
+    // Mutually exclusive upload: resident keeper, launchd oneshot, and a manual
+    // run can overlap. The platform dedupes by (installId, s) so a race would
+    // only waste a batch, but the lock makes "one report at a time" explicit.
+    // O_EXCL create; stale lock from a crashed process is retried after 60s.
+    const home = process.env.CTX_HOME ?? path.join(os.homedir(), '.codex', 'codex-theme-x');
+    const lockPath = path.join(home, 'report.lock');
+    const lockAgeMs = 60000;
+    let lockFd = null;
+    try {
+      await mkdir(home, { recursive: true });
+      try {
+        const st = await stat(lockPath);
+        if (Date.now() - st.mtimeMs > lockAgeMs) await unlink(lockPath);
+      } catch { /* no lock yet */ }
+      lockFd = await open(lockPath, 'wx');
+      await lockFd.writeFile(String(process.pid));
+    } catch {
+      console.log(opts.json ? JSON.stringify({ skipped: 'locked', uploaded: 0 }) : 'another report is running; skipped');
+      return;
+    }
+    try {
+      await report(base, opts);
+    } catch (err) {
+      if (lockFd) await lockFd.close();
+      await unlink(lockPath).catch(() => {});
+      lockFd = null;
+      fail(err.message, 3);
+    } finally {
+      if (lockFd) await lockFd.close();
+      await unlink(lockPath).catch(() => {});
+    }
+    return;
+  }
+
+  fail(`unknown command "${cmd ?? ''}" (status|apply|tune|remove|reload|screenshot|events|flush-signal|report)`);
 }
 
-export { loadTheme, buildCss, rendererProgram, safeHomePosition };
+// The upload loop proper, run under the report lock. Reads the renderer's
+// buffer over CDP, POSTs ≤10-event batches oldest-first, and prunes only what
+// the platform acknowledged (events arriving mid-upload have a higher seq and
+// survive). A failed batch leaves the buffer untouched for the next trigger.
+async function report(base, opts) {
+  const cdp = await connectToCodex(opts.port) ?? fail('Codex CDP port not reachable', 2);
+  const readStore = () => cdp.eval(`(() => { try { return JSON.parse(localStorage.getItem('__ctxAdEvents')); } catch { return null; } })()`);
+  const totals = { uploaded: 0, accepted: 0, duplicates: 0, eligible: 0, batches: 0 };
+  const campaignStates = new Map();
+  let store = await readStore();
+  while (store && Array.isArray(store.events) && store.events.length) {
+    const before = store.events.length;
+    const batch = selectBatch(store.events, 10);
+    const envelope = { v: store.v ?? 1, installId: store.installId, seq: store.seq ?? 0, events: batch };
+    let resp;
+    try {
+      const r = await fetch(`${base}/api/ingest`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(envelope),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      resp = await r.json();
+    } catch (err) {
+      cdp.close();
+      // Buffer kept intact — a failed batch is retried on the next run. Throw
+      // (not fail()) so the caller's finally releases the report lock first.
+      throw new Error(`upload failed (buffer kept): ${err.message}`);
+    }
+    const acknowledgedStates = normalizeCampaignStates(resp.campaignStates);
+    for (const state of acknowledgedStates) campaignStates.set(state.campaign, state);
+    // Success: persist Campaign state and prune acknowledged events (s ≤ batch
+    // max) from the LIVE store in one renderer turn. If Codex disappears before
+    // this runs, the buffer remains and the next idempotent retry gets the same
+    // authoritative state again.
+    const batchMaxSeq = batch[batch.length - 1].s;
+    await cdp.eval(`(() => { try {
+      if (window.__ctxTheme && typeof window.__ctxTheme.updateCampaignStates === 'function') {
+        window.__ctxTheme.updateCampaignStates(${JSON.stringify(acknowledgedStates)}, ${JSON.stringify(base)});
+      }
+      const s = JSON.parse(localStorage.getItem('__ctxAdEvents'));
+      if (!s) return;
+      s.events = (s.events || []).filter((e) => e.s > ${batchMaxSeq});
+      localStorage.setItem('__ctxAdEvents', JSON.stringify(s));
+    } catch {} })()`);
+    totals.uploaded += batch.length;
+    totals.accepted += resp.accepted ?? 0;
+    totals.duplicates += resp.duplicates ?? 0;
+    totals.eligible += resp.eligible ?? 0;
+    totals.batches += 1;
+    store = await readStore();
+    // Safety: if the prune didn't shrink the buffer, stop rather than loop.
+    if (store && Array.isArray(store.events) && store.events.length >= before) break;
+  }
+  cdp.close();
+  totals.campaignStates = [...campaignStates.values()];
+  if (opts.json) { console.log(JSON.stringify(totals)); return; }
+  console.log(`uploaded ${totals.uploaded} event(s) in ${totals.batches} batch(es) → accepted=${totals.accepted} duplicates=${totals.duplicates} eligible=${totals.eligible}`);
+}
+
+export { loadTheme, loadDistribution, buildCss, rendererProgram, safeHomePosition, resolveAdsApiBase, selectBatch, pruneConfirmed, normalizeCampaignStates };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => fail(err.message));

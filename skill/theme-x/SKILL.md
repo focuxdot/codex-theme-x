@@ -27,48 +27,78 @@ Parse the user's `$theme-x ...` argument:
 
 | Input | Action |
 |---|---|
-| an image path or attached image | **Create & apply** (flow A) |
+| an image path or attached image | **Create & apply** a standard theme (flow A) |
 | a scene description ("赛博朋克雨夜") | Generate an image first, then flow A |
-| `list` | Show saved themes (name, variant, dir); mention the two bundled examples only if the user has none |
+| the above **+ a sponsored trigger** (广告 / 赞助 / sponsored / `$theme-x sponsor …`) | **Create & apply a sponsored (ad) theme** (flow A-sponsor) |
+| `list` | Show saved themes (name, variant, **type**, dir); mention the two bundled examples only if the user has none |
 | `switch <name>` | Find the theme dir, run flow B on it |
 | `restore` | `bash scripts/restore.sh` after confirming with the user (app restarts) |
-| `share [name]` | `node scripts/pack.mjs pack --theme <dir>` → give the user the `.codextheme` file path and the `official.txt` one-liner inside it |
-| a `.codextheme` file | `node scripts/pack.mjs unpack --file <f>` then flow B on the printed dir |
+| `share` / `export` / `导出` / `分享` `[name]` | `node scripts/pack.mjs pack --theme <dir>` → give the user the `.codextheme` file path and the `official.txt` one-liner inside it |
+| a `.codextheme` file | `node scripts/pack.mjs unpack --file <f>` then flow B — the pack's `type` (standard/sponsored) is auto-detected on load; **both import identically** |
 | `doctor` | `bash scripts/doctor.sh`, explain the report in plain language |
 | `keep on` / `keep off` | `bash scripts/keeper-install.sh` / `keeper-uninstall.sh` |
 
+**Two theme types (`type` field).** `standard` (default) = a normal
+personalization theme. `sponsored` = an ad theme that also renders clickable
+Hero links. **Default is ALWAYS standard**: only enter the sponsored flow when
+the user explicitly signals it (the word 广告 / 赞助 / sponsored, or a
+`$theme-x sponsor …` prefix). Never infer "ad theme" from an ordinary image or
+description — that protects the majority of normal users. Creating and sharing
+sponsored themes is open to every user; the trigger is the only gate.
+
 ## Flow A — design a theme from an image
 
-1. **Variant follows the USER's mode, not the image.** Read the current mode
-   (`grep appearanceTheme ~/.codex/config.toml`; missing = `"system"`, resolve
-   that via `osascript -e 'tell application "System Events" to tell appearance preferences to get dark mode'`
-   — true = dark). Set `variant` to that mode and design the palette FOR it
-   from the image's hues — a dark image can drive a light palette (light
-   near-neutral surface tinted with the image's base color, accent lifted from
-   the image). Applying a theme never flips the app's light/dark mode: mode
-   bouncing on every image swap reads as chaos, not personalization.
+1. **Default is DUAL-MODE (`variant: "auto"`) — design BOTH a light and a dark
+   palette from the one image.** The theme then follows the user's light/dark
+   mode automatically, with no re-apply: switching the app mode in Settings
+   swaps the whole palette AND the veil densities live. This is the default for
+   every theme; you do not need a trigger. (Applying still never flips the
+   user's current mode — `auto` simply has the right look ready for both.)
 
-   When the image's brightness fights the variant (light artwork + dark-mode
-   UI or vice versa), compensate — ink can't sit raw on artwork that fights
-   it: `laneOpacity ≥ 0.55`, `sidebarOpacity ≥ 0.85`, and if that still
-   isn't enough `panelOpacity ≥ 0.3` as the last resort. Mention the
-   readability trade-off once, then do it.
+   Design **two coordinated palettes** from the same hues — a light one (light
+   near-neutral surface, dark ink) and a dark one (dark surface, light ink),
+   accent lifted from the image for each. They should read as the same theme in
+   two lightings, not two different themes.
 
-   Only when the user explicitly asks to switch modes (e.g. 顺便换成深色模式)
-   design for the requested mode and add `--set-mode` to the apply.sh call.
-2. **Design the palette** from the image's dominant hues:
+   **Per-mode readability compensation** (the density lever differs by mode):
+   when the artwork is bright, the DARK mode needs a denser sidebar so dark ink
+   stays legible (`sidebarOpacity ≥ 0.85`, `laneOpacity ≥ 0.55`); the LIGHT mode
+   over the same bright art can stay light (`sidebarOpacity ≈ 0.6`). Put each
+   mode's densities in its own `modes.<mode>.background`. Mention the trade-off
+   once, then do it.
+
+   **Explicit single-mode** (`$theme-x dark …` / `light …`, or "只做深色/浅色"):
+   set `variant` to `"dark"` or `"light"` with a single top-level `official` +
+   `background` (no `modes` block) — the legacy single-table path. Use
+   `--set-mode` on apply.sh only when the user explicitly wants the app mode
+   flipped to match.
+2. **Design each palette** from the image's dominant hues (do this for BOTH the
+   light and dark palette under `auto`):
    - `surface`: a near-neutral tone drawn from the image's base color
-     (dark variant: L ≈ 10–20%; light variant: L ≈ 92–97%).
-   - `ink`: contrast ≥ 7:1 against `surface`.
+     (dark: L ≈ 10–20%; light: L ≈ 92–97%).
+   - `ink`: contrast ≥ 7:1 against that mode's `surface`.
    - `accent`: the image's most characteristic saturated hue, contrast ≥ 3:1
-     against `surface`.
+     against that mode's `surface` (the two modes can carry different accents).
    - `semanticColors`: `diffAdded` greenish, `diffRemoved` reddish, `skill`
      purplish — tinted toward the image's palette but recognizably green/red/purple.
 3. **Write the theme dir** `~/.codex/codex-theme-x/themes/<id>/`:
    copy the image in (≤16 MB, png/jpg/webp/svg), write `theme.json`
-   (`schema: "codextheme/1"`; see format reference). Sensible starting points:
-   dark → `panelOpacity 0, sidebarOpacity 0.6, dim 0.9`;
-   light → `panelOpacity 0, sidebarOpacity 0.6, dim 1`.
+   (`schema: "codextheme/1"`; see format reference). For `auto`, carry both
+   palettes + per-mode densities in a `modes` block; the shared image and blurs
+   stay at the top level:
+   ```jsonc
+   "variant": "auto",
+   "modes": {
+     "light": { "official": { "surface": "#…", "ink": "#…", "accent": "#…", "contrast": … , "semanticColors": {…} },
+                "background": { "panelOpacity": 0, "sidebarOpacity": 0.6,  "dim": 1,    "laneOpacity": 0.45 } },
+     "dark":  { "official": { "surface": "#…", "ink": "#…", "accent": "#…", "contrast": … , "semanticColors": {…} },
+                "background": { "panelOpacity": 0, "sidebarOpacity": 0.85, "dim": 0.72, "laneOpacity": 0.62 } }
+   },
+   "background": { "file": "background.jpg", "sidebarBlur": 40, "glassBlur": 20, "blur": 0 }
+   ```
+   Effective vars for a mode = top-level `background` merged with that mode's
+   `modes.<mode>.background`. (A single-mode theme keeps the flat `official` +
+   `background` with no `modes`.)
 
    **Design the copy layer too — copy is part of the theme, not a setting.**
    Alongside the palette, write a `copy` block so the theme speaks in the
@@ -125,16 +155,91 @@ Parse the user's `$theme-x ...` argument:
    is the last resort. Any of this is one `tune` call, live, no restart.
 4. Continue with flow B.
 
+## Flow A-sponsor — design a sponsored (ad) theme
+
+Enter this ONLY on an explicit sponsored trigger (see the two-types note above).
+It is flow A plus an advertising layer; the difference is creative material
+(copy + jump links), not a different pipeline. Any user can build one.
+
+1. **Design the theme exactly as in flow A** (variant follows the user's mode,
+   palette + copy + Hero from the image). The artwork IS the ad creative, so the
+   Hero image matters even more — keep the left side quiet for the three copy
+   lines.
+2. **Source the advertiser creative — infer first, ask only as fallback.** The
+   three Hero copy slots — `kicker` (top label), `greeting` (headline),
+   `tagline` (subtitle) — can each become a clickable link. Each needs **copy
+   text** and, if it should jump, a **landing URL** (http/https only — other
+   schemes are dropped and the slot stays non-clickable). At least one slot is
+   required. Optionally a **campaign id**.
+
+   Where the creative comes from, in priority order:
+   - **The user's own context is the primary source, and using it is the point.**
+     Most users make an ad theme for *their own* product, so when their repos,
+     open files, or memory carry a clear advertiser signal (a branded project,
+     a product domain, a PRD/README with positioning), **infer the brand name,
+     copy, and landing URL from it** rather than making them retype what you can
+     already see. This "it already knows" auto-fill is a feature, not an
+     overstep — a wrong guess costs nothing because every field is editable in
+     one conversational turn (step 4).
+   - **When you inferred it, SAY SO and make it correctable.** In your report,
+     name the source in one line ("文案与链接读自你的 `<project>` 项目") and
+     invite edits. The user can only fix what they can see, so provenance is what
+     makes "填错也没关系" actually true. Match your running narration to what you
+     wrote — don't say "no jump for now" and then wire live URLs.
+   - **Only when there is NO signal at all** — no project, no brand, nothing in
+     context — do NOT invent a brand or a domain. Ask the user one line ("这条广告
+     是给谁做的？把文案和落地链接发我，或我先做无跳转的占位"), or write text-only
+     slots with the URL omitted (valid, non-clickable). Fabricating a plausible
+     real-looking domain from thin air is the one thing to avoid.
+
+   The **disclosure** badge (a "Sponsored" chip on the kicker) is **OFF by
+   default** — leave `sponsor.disclosure` unset; only add it if the advertiser
+   or platform explicitly asks for one.
+3. **Write `type: "sponsored"` + a `sponsor` block** into `theme.json` (schema
+   reference: format doc, sponsor section):
+   ```jsonc
+   "type": "sponsored",
+   "sponsor": {
+     "campaign": "cmp-...",            // optional, platform/advertiser id
+     "disclosure": "Sponsored",        // optional badge on the kicker
+     "slots": {
+       "kicker":   { "text": "ACME AI",        "url": "https://acme.example/" },
+       "greeting": { "text": "一个 API 接入所有大模型", "url": "https://acme.example/models" },
+       "tagline":  { "text": "免费额度 · 立即体验",  "url": "https://acme.example/start" }
+     }
+   }
+   ```
+   **The `sponsor.slots` own the three Hero lines — do not also set
+   `home.kicker` / `home.tagline`.** In a sponsored theme the sponsor slots
+   render the Hero copy and `home.kicker`/`home.tagline` are dead text that only
+   drifts out of sync; omit them (keep the rest of the `home` block — height,
+   focalPoint, overlay, cardOpacity, backdrop — for layout).
+
+   Red lines the renderer enforces (don't fight them): a linked slot must LOOK
+   clickable and only navigates on an explicit click (never auto/hover); the
+   disclosure badge, when set, is platform-rendered. A `sponsored` theme with no
+   usable slot fails to load.
+4. **Tell the user it's a sponsored theme** in one line — the Hero lines will be
+   clickable and open the system browser, per-slot impression/click metrics are
+   recorded locally (`node scripts/inject.mjs events`), and it can be shared as a
+   normal `.codextheme` (`share`) that installs like any other pack. **If you
+   inferred the brand/copy/links from the user's context (step 2), name the
+   source and say any line or URL can be changed by just saying so** — that one
+   sentence is what lets the user correct an auto-filled guess.
+5. Continue with flow B.
+
 ## Flow B — apply a theme directory
 
-1. **Mode check.** Compare the theme's `variant` with the user's current mode
-   (read it as in flow A step 1). If they differ, the palette would land in
-   the wrong chrome-theme table and stay invisible — by default ADAPT the
-   theme: re-derive `surface`/`ink` (and `accent` if contrast demands) for
-   the current mode from the same artwork, update its `theme.json`, and keep
-   the user's mode untouched. Pass `--set-mode` instead only when the user
-   explicitly asked to flip the app's mode. Tell the user which path you took
-   in one line.
+1. **Mode check.** An `auto` theme always matches — it writes BOTH chrome
+   tables and follows the user's mode live — so skip this step entirely (no
+   adapt, no `--set-mode`). Only a SINGLE-mode theme (`variant: "dark"`/`"light"`)
+   needs the check: compare its `variant` with the user's current mode (read it
+   as in flow A step 1); if they differ, the palette would land in the wrong
+   chrome-theme table and stay invisible — by default ADAPT the theme (re-derive
+   `surface`/`ink`, and `accent` if contrast demands, for the current mode from
+   the same artwork; update its `theme.json`; keep the user's mode untouched),
+   or pass `--set-mode` only when the user explicitly asked to flip the app's
+   mode. Tell the user which path you took in one line.
 2. **Warn, then actually run it.** First tell the user Codex will quit and
    relaunch themed in ~15 seconds, the conversation survives, and they can just
    say "继续". THEN — as the **final tool call of your turn** — run:
@@ -185,8 +290,8 @@ result, and nudge individual values from there.
 
 Ask ONCE (then remember in the theme state, don't re-ask): "要不要自动保持主题？
 应用过带背景图的主题后，从桌面正常打开 Codex 会自动重启一次并恢复背景
-（代价：Codex 以仅本机的调试端口运行；检查由系统 launchd 在应用启动瞬间触发，
-无常驻进程）"
+（代价：Codex 以仅本机的调试端口运行；系统 launchd 会保留一个轻量事件桥接进程，
+每 4 秒只检查一次本地信号，无信号时不上传、不访问网络）"
 → yes: `bash scripts/keeper-install.sh`.
 
 The keeper must stay inert unless all three conditions hold: it was explicitly
@@ -207,6 +312,27 @@ an existing background image. Color-only themes never trigger a relaunch.
   `restore`. Never edit `config.toml` by hand here.
 - Respect image licensing: warn briefly if the user plans to redistribute a
   theme built on artwork they don't own.
+- **Sponsored themes** are the line between a theme and adware — stay on the
+  right side of it: links fire only on an explicit click on a clearly-marked
+  slot, never auto/hover and never the whole Hero as a hot zone; landing URLs
+  must be http(s) (the disclosure badge is off by default). Metering is a property
+  of ad themes only — a standard theme's payload records nothing. Metrics stay
+  local and content-free (slot/campaign/timestamp only — never URLs, screen, or
+  keystrokes), and **upload is off unless `ADS_API_BASE` is configured** (env,
+  `~/.codex/codex-theme-x/config.json`, or an applied gallery pack's validated
+  `adsmarket-distribution.json`); read locally with `inject.mjs events`,
+  upload (when configured) with `inject.mjs report`. Uploads are **event-driven,
+  never periodic**: exactly three automatic triggers — the buffer hitting 10,
+  a graceful app exit, and the next launch catching up leftovers. The renderer
+  only drops a one-shot localStorage flag; the keeper turns each flag into one
+  `report` (a `report.lock` keeps concurrent triggers mutually exclusive).
+  The platform's successful ingest response is also the authority for Campaign
+  state. Persist its `campaignStates`; when the current Campaign is
+  `exhausted`, keep the theme/artwork and sponsor copy in place, stop recording
+  billable impressions and sponsor clicks, disable the sponsor links, and show
+  the Hero status “Campaign ended / future impressions will not earn revenue”
+  with a link back to the gallery. Never infer exhaustion from the client-side
+  budget or event count, and never add a polling/timer request for this state.
 - If anything looks broken after a Codex update (background gone, doctor
   reports BAD), say clearly that the app update likely changed internals, run
   `doctor`, and suggest `restore` as the always-safe exit.

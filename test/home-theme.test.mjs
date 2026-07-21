@@ -78,3 +78,15 @@ test('codextheme packing includes an optional separate home hero', () => {
   const files = execFileSync('/usr/bin/unzip', ['-Z1', out]).toString().trim().split('\n');
   assert.deepEqual(files.sort(), ['background.png', 'hero.png', 'official.txt', 'theme.json'].sort());
 });
+
+test('codextheme packing preserves adsMarket distribution attribution', () => {
+  const dir = fixture({ file: 'hero.png' });
+  writeFileSync(path.join(dir, 'adsmarket-distribution.json'), JSON.stringify({
+    v: 1, beneficiaryUserId: 'usr_test', themeId: 'home-test', source: 'gallery', adsApiBase: 'https://ads.example',
+  }));
+  const out = path.join(dir, 'attributed.codextheme');
+  const packer = path.resolve('skill/theme-x/scripts/pack.mjs');
+  execFileSync(process.execPath, [packer, 'pack', '--theme', dir, '--out', out]);
+  const files = execFileSync('/usr/bin/unzip', ['-Z1', out]).toString().trim().split('\n');
+  assert.ok(files.includes('adsmarket-distribution.json'));
+});

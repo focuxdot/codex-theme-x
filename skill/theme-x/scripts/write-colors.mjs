@@ -32,20 +32,36 @@ function parseArgs(argv) {
     if (rest[i] === '--theme') opts.theme = rest[++i];
     else if (rest[i] === '--config') opts.config = rest[++i];
     else if (rest[i] === '--set-mode') opts.setMode = true;
+    else if (rest[i] === '--mode') opts.mode = rest[++i];
     else fail(`unknown option: ${rest[i]}`);
   }
   return { cmd, opts };
 }
 
+function validateOfficial(o, where) {
+  for (const key of ['accent', 'ink', 'surface']) {
+    if (!/^#[0-9a-fA-F]{6}$/.test(o[key] ?? '')) fail(`theme.json: ${where}.${key} must be a 6-digit hex color`);
+  }
+  return o;
+}
+
 async function loadTheme(themeDir) {
   const theme = JSON.parse(await readFile(path.join(themeDir, 'theme.json'), 'utf8'));
   if (theme.schema !== 'codextheme/1') fail('theme.json: expected "schema": "codextheme/1"');
-  const variant = theme.variant === 'light' ? 'light' : 'dark';
-  const o = theme.official ?? {};
-  for (const key of ['accent', 'ink', 'surface']) {
-    if (!/^#[0-9a-fA-F]{6}$/.test(o[key] ?? '')) fail(`theme.json: official.${key} must be a 6-digit hex color`);
+  const name = theme.name ?? theme.id;
+  // "auto" = dual-mode pack: both palettes live under modes.{light,dark} and
+  // BOTH chrome tables get written, so the theme follows the user's light/dark
+  // mode with no re-apply. "dark"/"light" = single-mode (one table).
+  if (theme.variant === 'auto' && theme.modes?.light && theme.modes?.dark) {
+    return {
+      variant: 'auto',
+      officialLight: validateOfficial(theme.modes.light.official ?? {}, 'modes.light.official'),
+      officialDark: validateOfficial(theme.modes.dark.official ?? {}, 'modes.dark.official'),
+      name,
+    };
   }
-  return { variant, official: o, name: theme.name ?? theme.id };
+  const variant = theme.variant === 'light' ? 'light' : 'dark';
+  return { variant, official: validateOfficial(theme.official ?? {}, 'official'), name };
 }
 
 // --------------------------------------------------------- TOML line surgery
@@ -165,7 +181,14 @@ async function main() {
 
   if (cmd === 'export') {
     if (!opts.theme) fail('export requires --theme <dir>');
-    const { variant, official: o } = await loadTheme(opts.theme);
+    const loaded = await loadTheme(opts.theme);
+    // The official.txt one-liner is a single-mode color string (for people
+    // without the tool). An auto theme has two palettes; emit the dark one by
+    // default (override with --mode light).
+    const variant = loaded.variant === 'auto' ? (opts.mode === 'light' ? 'light' : 'dark') : loaded.variant;
+    const o = loaded.variant === 'auto'
+      ? (variant === 'light' ? loaded.officialLight : loaded.officialDark)
+      : loaded.official;
     const payload = {
       codeThemeId: o.codeThemeId ?? 'one', // custom ids are rejected by the importer; reuse a built-in id
       theme: {
@@ -185,29 +208,36 @@ async function main() {
 
   if (cmd === 'apply') {
     if (!opts.theme) fail('apply requires --theme <dir>');
-    const { variant, official, name } = await loadTheme(opts.theme);
+    const loaded = await loadTheme(opts.theme);
+    const { variant, name } = loaded;
     const text = await readFile(opts.config, 'utf8');
     let lines = text.split('\n');
 
     await snapshotOriginal(lines);
     const backupPath = await backup(opts.config);
 
-    const { table, lines: themeLines } = chromeThemeTables(variant, official);
-    lines = removeTables(lines, table);
-    // Mode follows the USER, not the image: the palette lands in the variant's
-    // chrome-theme table, but the app's light/dark mode is never flipped by a
-    // theme apply — that made every image swap bounce the whole UI between
-    // modes. --set-mode (explicit user request only) opts back in.
+    // auto → write BOTH chrome tables (the theme follows whatever mode the user
+    // is in). single-mode → write just the one. Mode follows the USER, not the
+    // image: a theme apply never flips the app's light/dark mode (that made
+    // every image swap bounce the whole UI); --set-mode opts back in.
+    const written = variant === 'auto'
+      ? [chromeThemeTables('light', loaded.officialLight), chromeThemeTables('dark', loaded.officialDark)]
+      : [chromeThemeTables(variant, loaded.official)];
+    for (const w of written) lines = removeTables(lines, w.table);
+
     const currentMode = (getKey(lines, 'desktop', 'appearanceTheme') ?? '"system"').replace(/"/g, '');
-    if (opts.setMode) {
+    if (opts.setMode && variant !== 'auto') {
       lines = setKey(lines, 'desktop', 'appearanceTheme', `"${variant}"`);
     }
     while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
-    lines.push('', ...themeLines, '');
+    for (const w of written) lines.push('', ...w.lines);
+    lines.push('');
 
     await writeFile(opts.config, lines.join('\n'));
     console.log(`colors written for "${name}" (${variant}); backup: ${backupPath}`);
-    if (!opts.setMode && currentMode !== variant) {
+    if (variant === 'auto') {
+      console.log('note: auto theme — both light and dark palettes written; follows the app mode automatically.');
+    } else if (!opts.setMode && currentMode !== variant) {
       console.log(currentMode === 'system'
         ? `note: appearanceTheme is "system" — the palette shows whenever the app is in ${variant} mode.`
         : `note: app mode stays "${currentMode}"; this palette targets ${variant} mode and will not be visible until the mode matches. Adapt the palette to ${currentMode} or pass --set-mode if the user explicitly wants the flip.`);

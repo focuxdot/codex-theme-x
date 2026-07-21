@@ -25,7 +25,7 @@ git clone --depth 1 https://github.com/focuxdot/codex-theme-x /tmp/codex-theme-x
 ```
 $theme-x ~/Pictures/miku.jpg     # 一张图 → AI 配色 → 完整主题
 $theme-x 赛博朋克雨夜             # 一句话 → 先生图再成主题
-$theme-x list / switch / share / restore / doctor
+$theme-x list / switch / share（导出/分享）/ restore / doctor
 ```
 
 换主题也是一句话。`$theme-x switch <主题名>`，全程不用重启——同一个应用，两种世界。
@@ -46,6 +46,8 @@ $theme-x list / switch / share / restore / doctor
 ## 你得到的不只是壁纸
 
 - **AI 看图配色**，写入 Codex **官方外观系统**（原生持久，官方更新不影响）
+- **默认随明暗模式自动切换**：一张图生成亮/暗两套配色与磨砂，系统或 Codex 切模式时
+  整套主题实时跟随，无需重新应用
 - **空白页 Hero**：横向主题画卷 + 主题标语，任务页保持原生全幅画面
 - **文案层**：问候语、输入框提示、窗口标题与画面同一个声音——截图里的
   「沿着…的林间小径」「听着海风，随心输入」「松风入砚」都来自主题本身；
@@ -68,10 +70,28 @@ $theme-x list / switch / share / restore / doctor
 
 ```
 $theme-x share            # 导出 <id>.codextheme（一个 zip）
+# share / export / 导出 / 分享 均可触发
 ```
 
 装了本工具的人把文件拖进对话说"装这个主题"；没装的人把包内 `official.txt` 的
 `codex-theme-v1:` 一行粘进 Settings → Appearance → Import，配色直接生效。
+
+## 赞助主题（可选）
+
+主题分两类，由 `type` 字段区分：`standard`（默认，普通主题）和 `sponsored`
+（广告主题）。广告主题在普通主题之上，把空白页 Hero 卡的三行文案变成**可点击、
+跳转到广告主链接**的槽位——点击唤起系统浏览器，可选「Sponsored」披露角标。
+
+- **默认永远是普通主题**：只有显式说「广告/赞助/sponsored」或 `$theme-x sponsor …`
+  才会生成广告主题——普通用户完全不受影响。
+- **制作对所有人开放**：流程和普通主题一样，只是多提供文案 + 跳转链接。
+- **底线**：只在明确标注的槽位、点击才跳，永不自动/悬停跳、整块 Hero 永不作热区
+  （与 adware 的分界线）；埋点只在本机、只记曝光/点击计数，绝不采链接内容、屏幕或键值。
+  上传默认关闭，且只在三种事件驱动时机发生（缓冲满 10 条 / 正常退出前 / 下次启动补传），
+  永不做定时轮询上传。
+- **预算耗尽仍可继续使用**：平台在下一次事件上报响应中返回投放状态；主题保留原外观，
+  Hero 显示“投放已结束 / 不再产生收益”，并停止新的广告曝光计量和广告跳转。
+- **一样能分享**：广告主题包与普通包同一格式，导入无差别。
 
 ## FAQ
 

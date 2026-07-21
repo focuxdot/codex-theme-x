@@ -16,6 +16,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DISTRIBUTION_FILE = 'adsmarket-distribution.json';
 
 function fail(msg) { console.error(`pack.mjs: ${msg}`); process.exit(1); }
 
@@ -59,6 +60,10 @@ async function main() {
     try {
       await cp(path.join(dir, 'theme.json'), path.join(staging, 'theme.json'));
       for (const asset of assets) await cp(path.join(dir, asset), path.join(staging, asset));
+      const distribution = path.join(dir, DISTRIBUTION_FILE);
+      let hasDistribution = false;
+      try { await access(distribution); hasDistribution = true; } catch {}
+      if (hasDistribution) await cp(distribution, path.join(staging, DISTRIBUTION_FILE));
       // Embed the official color string so people WITHOUT codex-theme-x can
       // still paste the colors into Settings → Appearance → Import.
       const official = execFileSync(process.execPath,
@@ -68,7 +73,7 @@ async function main() {
       const out = path.resolve(opts.out ?? `${theme.id ?? path.basename(dir)}.codextheme`);
       await rm(out, { force: true });
       execFileSync('/usr/bin/zip', ['-q', '-j', out,
-        ...['theme.json', ...assets, 'official.txt'].map((f) => path.join(staging, f))]);
+        ...['theme.json', ...assets, 'official.txt', ...(hasDistribution ? [DISTRIBUTION_FILE] : [])].map((f) => path.join(staging, f))]);
       console.log(out);
     } finally {
       await rm(staging, { recursive: true, force: true });
