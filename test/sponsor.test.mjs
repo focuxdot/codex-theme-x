@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import vm from 'node:vm';
 import os from 'node:os';
 import path from 'node:path';
 import {
   buildCss, loadTheme, rendererProgram,
   resolveAdsApiBase, selectBatch, pruneConfirmed, normalizeCampaignStates,
+  uploadEventIssue, partitionUploadEvents, quarantineInvalidEventsProgram,
 } from '../skill/theme-x/scripts/inject.mjs';
 
 const INJECT_URL = new URL('../skill/theme-x/scripts/inject.mjs', import.meta.url).href;
@@ -194,6 +196,110 @@ test('pruneConfirmed: keeps only s > batch max (upload-race safe)', () => {
   const events = [{ s: 1 }, { s: 2 }, { s: 3 }, { s: 7 }]; // 7 arrived during upload
   assert.deepEqual(pruneConfirmed(events, 3).map((e) => e.s), [7]);
   assert.deepEqual(pruneConfirmed([], 3), []);
+});
+
+test('upload validation isolates a legacy null-campaign event without changing valid events', () => {
+  const valid = {
+    s: 11, t: 1784620334416, type: 'impression', slot: 'kicker',
+    campaign: 'cmp-live', theme: 'theme-live', beneficiary: 'usr_123',
+  };
+  const legacy = { ...valid, s: 10, campaign: null };
+  assert.equal(uploadEventIssue(valid), null);
+  assert.equal(uploadEventIssue({ s: 12, type: 'switch_away', theme: 'theme-live' }), null);
+  assert.equal(uploadEventIssue(legacy), 'invalid_campaign');
+  assert.equal(uploadEventIssue({ ...valid, secret: 'must-not-survive' }), 'unknown_field');
+  const partitioned = partitionUploadEvents([legacy, valid]);
+  assert.deepEqual(partitioned.valid, [valid]);
+  assert.equal(partitioned.invalid.length, 1);
+  assert.equal(partitioned.invalid[0].reason, 'invalid_campaign');
+});
+
+test('live quarantine frees a full poisoned buffer and stores metadata-only diagnostics', () => {
+  const oldEvents = Array.from({ length: 10 }, (_, index) => ({
+    s: index + 1, t: 1784620334416 + index, type: 'impression', slot: 'kicker',
+    campaign: null, theme: 'legacy-theme', secret: `private-${index}`,
+  }));
+  const valid = { s: 11, t: 1784620334500, type: 'impression', slot: 'kicker', campaign: 'cmp-live', theme: 'theme-live' };
+  const storage = new Map([['__ctxAdEvents', JSON.stringify({
+    v: 1, installId: '11111111-2222-4333-8444-555555555555', seq: 11, events: [...oldEvents, valid],
+  })]]);
+  const localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+  const result = vm.runInNewContext(quarantineInvalidEventsProgram(), { localStorage, Date, JSON, Number, Object, Array, Set });
+  assert.deepEqual({ ...result }, {
+    ok: true, quarantined: 10, diagnosticsDropped: 0, remaining: 1,
+  });
+  const live = JSON.parse(storage.get('__ctxAdEvents'));
+  assert.deepEqual(live.events, [valid]);
+  const quarantine = JSON.parse(storage.get('__ctxAdEventsQuarantine'));
+  assert.equal(quarantine.events.length, 10);
+  assert.deepEqual(quarantine.events[0], { seq: 1, reason: 'invalid_campaign', quarantinedAt: quarantine.events[0].quarantinedAt });
+  assert.doesNotMatch(storage.get('__ctxAdEventsQuarantine'), /private-/);
+});
+
+test('quarantine storage exhaustion never leaves a poisoned event uploadable', () => {
+  const invalid = { s: 1, t: 1784620334416, type: 'impression', slot: 'kicker', campaign: null, theme: 'legacy-theme' };
+  const valid = { s: 2, t: 1784620334500, type: 'active_day', theme: 'theme-live' };
+  const storage = new Map([['__ctxAdEvents', JSON.stringify({
+    v: 1, installId: '11111111-2222-4333-8444-555555555555', seq: 2, events: [invalid, valid],
+  })]]);
+  const localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem(key, value) {
+      if (key === '__ctxAdEventsQuarantine') throw new Error('quota exceeded');
+      storage.set(key, String(value));
+    },
+    removeItem: (key) => storage.delete(key),
+  };
+  const result = vm.runInNewContext(quarantineInvalidEventsProgram(), { localStorage, Date, JSON, Number, Object, Array, Set });
+  assert.deepEqual({ ...result }, {
+    ok: true, quarantined: 1, diagnosticsDropped: 1, remaining: 1,
+  });
+  assert.deepEqual(JSON.parse(storage.get('__ctxAdEvents')).events, [valid]);
+});
+
+test('main-buffer storage failure is reported before an invalid batch can upload', () => {
+  const invalid = { s: 1, type: 'impression', slot: 'kicker', campaign: null, theme: 'legacy-theme' };
+  const raw = JSON.stringify({
+    v: 1, installId: '11111111-2222-4333-8444-555555555555', seq: 1, events: [invalid],
+  });
+  const storage = new Map([['__ctxAdEvents', raw]]);
+  const localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem(key) {
+      if (key === '__ctxAdEvents') throw new Error('storage unavailable');
+    },
+    removeItem: (key) => storage.delete(key),
+  };
+  const result = vm.runInNewContext(quarantineInvalidEventsProgram(), { localStorage, Date, JSON, Number, Object, Array, Set });
+  assert.deepEqual({ ...result }, {
+    ok: false, quarantined: 0, diagnosticsDropped: 0, remaining: null,
+  });
+  assert.equal(storage.get('__ctxAdEvents'), raw);
+});
+
+test('existing quarantine entries are rebuilt from bounded metadata only', () => {
+  const invalid = { s: 2, type: 'impression', slot: 'kicker', campaign: null, theme: 'legacy-theme' };
+  const storage = new Map([
+    ['__ctxAdEvents', JSON.stringify({ v: 1, installId: '11111111-2222-4333-8444-555555555555', seq: 2, events: [invalid] })],
+    ['__ctxAdEventsQuarantine', JSON.stringify({
+      v: 1,
+      events: [{ seq: 1, reason: 'x'.repeat(200), quarantinedAt: 1784620334000, secret: 'must-not-survive' }],
+    })],
+  ]);
+  const localStorage = {
+    getItem: (key) => storage.get(key) ?? null,
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  };
+  vm.runInNewContext(quarantineInvalidEventsProgram(), { localStorage, Date, JSON, Number, Object, Array, Set });
+  const quarantine = JSON.parse(storage.get('__ctxAdEventsQuarantine'));
+  assert.deepEqual(Object.keys(quarantine.events[0]).sort(), ['quarantinedAt', 'reason', 'seq']);
+  assert.equal(quarantine.events[0].reason.length, 64);
+  assert.doesNotMatch(storage.get('__ctxAdEventsQuarantine'), /must-not-survive/);
 });
 
 test('normalizeCampaignStates keeps only authoritative bounded Campaign states', () => {

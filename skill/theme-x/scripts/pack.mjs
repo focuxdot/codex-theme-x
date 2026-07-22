@@ -58,7 +58,11 @@ async function main() {
 
     const staging = await mkdtemp(path.join(os.tmpdir(), 'codextheme-'));
     try {
-      await cp(path.join(dir, 'theme.json'), path.join(staging, 'theme.json'));
+      const exportedTheme = structuredClone(theme);
+      if (exportedTheme.type === 'sponsored' && exportedTheme.sponsor) {
+        delete exportedTheme.sponsor.campaign;
+      }
+      await writeFile(path.join(staging, 'theme.json'), `${JSON.stringify(exportedTheme, null, 2)}\n`);
       for (const asset of assets) await cp(path.join(dir, asset), path.join(staging, asset));
       const distribution = path.join(dir, DISTRIBUTION_FILE);
       let hasDistribution = false;

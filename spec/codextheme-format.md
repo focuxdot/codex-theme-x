@@ -187,8 +187,6 @@ sidebar/lane/dim/panel 密度，因此无需重新应用即可两种模式都好
   "type": "sponsored",                 // 必须为 sponsored，sponsor 层才会渲染
 
   "sponsor": {
-    "campaign": "cmp-acme-2026q3",     // 平台签发的 campaign id，≤64 字符。随每条
-                                       // 埋点事件上报，用于计费与归因；缺省 = null
     "disclosure": "Sponsored",         // kicker 上的披露角标，≤16 字符。平台可强制
                                        // 签发（广告主文案删不掉）；缺省 = 不渲染角标
     "slots": {                         // 三槽位全部可选；只有带合法 url 的槽位可点
@@ -309,8 +307,12 @@ payload 内运行，**standard 主题零埋点、零 marker、零上报**（无�
    带走**整个当前缓冲**，含本次启动刚写的 `active_day`，不只历史遗留；
    平台按 `(installId, s)` 幂等，重复安全。
 
+上传前先按同一字段协议检查本地事件。历史版本或本地篡改产生的非法事件会先从主缓冲移除，
+再 best-effort 写入 `__ctxAdEventsQuarantine`；隔离区只保留 `seq`、原因和隔离时间，
+最多 50 条，旧记录也会按这三个字段重建。即使隔离区因容量限制无法写入，坏事件也不会继续阻塞合法事件上传。
+
 成功后**只删本批已确认**（`s ≤ 批次最大 seq`；上传中新增事件 seq 更大故不误删），
-失败全留、下次触发重试。单批 ≤10 条。三路触发（resident signal bridge、启动补传、
+合法批次失败则全留、下次触发重试。单批 ≤10 条。三路触发（resident signal bridge、启动补传、
 手动 `report`）可能并发，由 `~/.codex/codex-theme-x/report.lock`（`O_EXCL` 创建、
 60s stale 回收、失败路径必释放）保证同一时刻只有一个上传。渲染层**永不直连平台**，
 信号与上传一一对应——没有 flag 的轮询什么都不做。
@@ -345,7 +347,7 @@ Hero 文案和整体主题；停止生成该 Campaign 的曝光/点击事件；�
 node scripts/inject.mjs events                # 按槽位/类型汇总 impressions/clicks/ctr + 留存计数
 node scripts/inject.mjs events --clear         # 只清事件、保留 installId+seq（身份跨上传周期稳定）
 node scripts/inject.mjs report                 # 读缓冲 → POST /api/ingest → 删已确认（未配置则 no-op）
-node scripts/inject.mjs report --json          # 机读上传汇总
+node scripts/inject.mjs report --json          # 机读上传汇总（含 quarantined 数量）
 node scripts/inject.mjs flush-signal           # keeper 专用：原子读清 __ctxAdFlush，非通用 eval
 ```
 

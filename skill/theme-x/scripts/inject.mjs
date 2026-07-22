@@ -1244,28 +1244,43 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     return el;
   };
   const campaignCopy = () => {
-    const lang = String(document.documentElement.lang || (typeof navigator !== 'undefined' ? navigator.language : '') || '').toLowerCase();
+    // Codex currently leaves <html lang="en"> in place even when the Electron
+    // renderer is running in Chinese. navigator.language is the locale that
+    // drives the native UI, so prefer it and keep the document language only
+    // as a fallback for older builds.
+    const navigatorLang = typeof navigator !== 'undefined'
+      ? ((Array.isArray(navigator.languages) && navigator.languages[0]) || navigator.language || '')
+      : '';
+    const lang = String(navigatorLang || document.documentElement.lang || '').toLowerCase();
     return lang.startsWith('zh')
       ? { badge: '投放已结束', detail: '此主题后续曝光不再产生收益', action: '更换可收益主题 →' }
       : { badge: 'Campaign ended', detail: 'Future impressions from this theme will not earn revenue', action: 'Choose an earning theme →' };
   };
+  const applyCampaignCopy = (state) => {
+    const copy = campaignCopy();
+    const badge = state.querySelector('.ctx-campaign-state-badge');
+    const detail = state.querySelector('.ctx-campaign-state-detail');
+    const action = state.querySelector('.ctx-campaign-state-action');
+    if (badge) badge.textContent = copy.badge;
+    if (detail) detail.textContent = copy.detail;
+    if (action) action.textContent = copy.action;
+  };
   const ensureCampaignState = (box) => {
     let state = box.querySelector(':scope > .ctx-campaign-state');
-    if (state) return state;
-    const copy = campaignCopy();
+    if (state) {
+      applyCampaignCopy(state);
+      return state;
+    }
     state = document.createElement('div');
     state.className = 'ctx-campaign-state';
     state.setAttribute('role', 'status');
     const badge = document.createElement('span');
     badge.className = 'ctx-campaign-state-badge';
-    badge.textContent = copy.badge;
     const detail = document.createElement('span');
     detail.className = 'ctx-campaign-state-detail';
-    detail.textContent = copy.detail;
     const action = document.createElement('button');
     action.type = 'button';
     action.className = 'ctx-campaign-state-action';
-    action.textContent = copy.action;
     action.addEventListener('click', (event) => {
       event.preventDefault(); event.stopPropagation();
       if (campaignGalleryUrl) openSponsor(String(campaignGalleryUrl).replace(/\\\/+$/, '') + '/');
@@ -1274,6 +1289,7 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     state.appendChild(detail);
     state.appendChild(action);
     box.appendChild(state);
+    applyCampaignCopy(state);
     return state;
   };
   const syncCampaignState = () => {
@@ -1356,6 +1372,7 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     sponsorObserver.observe(document.body, { childList: true, subtree: true });
     addEventListener('focus', reEvalSlots);
     addEventListener('blur', reEvalSlots);
+    addEventListener('languagechange', syncCampaignState);
     document.addEventListener('visibilitychange', reEvalSlots);
     // Event-driven flush signal #2 (handoff §4): a graceful page unload asks
     // the host for one best-effort report while CDP can still read the buffer.
@@ -1382,6 +1399,7 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
       if (sponsorIO) sponsorIO.disconnect();
       removeEventListener('focus', reEvalSlots);
       removeEventListener('blur', reEvalSlots);
+      removeEventListener('languagechange', syncCampaignState);
       document.removeEventListener('visibilitychange', reEvalSlots);
       removeEventListener('pagehide', onPageHideFlush);
       removeEventListener('beforeunload', onPageHideFlush);
@@ -1450,6 +1468,98 @@ function selectBatch(events, max = 10) {
 // upload get a higher seq than the batch, so they survive (never mis-deleted).
 function pruneConfirmed(events, batchMaxSeq) {
   return (events ?? []).filter((e) => e.s > batchMaxSeq);
+}
+
+// Mirror the platform envelope validator closely enough to keep one legacy or
+// tampered local event from poisoning an otherwise uploadable batch. Invalid
+// events are never rewritten into a more billable shape: the report command
+// moves them out of the bounded upload queue and records metadata-only local
+// diagnostics instead.
+function uploadEventIssue(event) {
+  const eventTypes = new Set(['impression', 'click', 'listing_exposure', 'preview', 'install', 'active_day', 'switch_away']);
+  const adTypes = new Set(['impression', 'click']);
+  const slots = new Set(['kicker', 'greeting', 'tagline']);
+  const keys = new Set(['s', 't', 'type', 'slot', 'campaign', 'theme', 'beneficiary']);
+  const beneficiaryRe = /^[a-zA-Z0-9_-]{1,128}$/;
+  if (!event || typeof event !== 'object' || Array.isArray(event)) return 'event_not_object';
+  if (!Number.isInteger(event.s) || event.s < 0) return 'invalid_seq';
+  if (event.t !== undefined && (!Number.isInteger(event.t) || event.t < 0)) return 'invalid_timestamp';
+  if (!eventTypes.has(event.type)) return 'invalid_type';
+  if (event.slot !== undefined && !slots.has(event.slot)) return 'invalid_slot';
+  if (adTypes.has(event.type) && !slots.has(event.slot)) return 'ad_event_missing_slot';
+  if (event.campaign !== undefined && (typeof event.campaign !== 'string' || !event.campaign || event.campaign.length > 64))
+    return 'invalid_campaign';
+  if (event.theme !== undefined && (typeof event.theme !== 'string' || !event.theme || event.theme.length > 128))
+    return 'invalid_theme';
+  if (event.beneficiary !== undefined && (typeof event.beneficiary !== 'string' || !beneficiaryRe.test(event.beneficiary)))
+    return 'invalid_beneficiary';
+  if (event.beneficiary !== undefined && !adTypes.has(event.type)) return 'beneficiary_on_lifecycle_event';
+  if (Object.keys(event).some((key) => !keys.has(key))) return 'unknown_field';
+  return null;
+}
+
+function partitionUploadEvents(events) {
+  const valid = [];
+  const invalid = [];
+  for (const event of Array.isArray(events) ? events : []) {
+    const reason = uploadEventIssue(event);
+    if (reason) invalid.push({ event, reason });
+    else valid.push(event);
+  }
+  return { valid, invalid };
+}
+
+// Run the same partition against the LIVE renderer store so events appended
+// after the host snapshot are preserved. Quarantine is deliberately metadata
+// only: arbitrary legacy fields must never become a second telemetry store.
+function quarantineInvalidEventsProgram(limit = 50) {
+  const boundedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+  return `(() => { try {
+    const storeKey = '__ctxAdEvents';
+    const quarantineKey = '__ctxAdEventsQuarantine';
+    const store = JSON.parse(localStorage.getItem(storeKey));
+    if (!store || !Array.isArray(store.events)) return {
+      ok: true, quarantined: 0, diagnosticsDropped: 0, remaining: 0
+    };
+    const issue = ${uploadEventIssue.toString()};
+    const valid = [], diagnostics = [], at = Date.now();
+    for (const event of store.events) {
+      const reason = issue(event);
+      if (!reason) valid.push(event);
+      else diagnostics.push({ seq: Number.isInteger(event?.s) ? event.s : null, reason, quarantinedAt: at });
+    }
+    if (!diagnostics.length) return {
+      ok: true, quarantined: 0, diagnosticsDropped: 0, remaining: valid.length
+    };
+    let previous = [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem(quarantineKey));
+      if (parsed && Array.isArray(parsed.events)) previous = parsed.events.slice(-${boundedLimit}).flatMap((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+        const seq = entry.seq === null || Number.isInteger(entry.seq) ? entry.seq : null;
+        const reason = typeof entry.reason === 'string' ? entry.reason.slice(0, 64) : 'unknown';
+        const quarantinedAt = Number.isInteger(entry.quarantinedAt) && entry.quarantinedAt >= 0
+          ? entry.quarantinedAt : at;
+        return [{ seq, reason, quarantinedAt }];
+      });
+    } catch {}
+    // Free the upload queue first. Writing diagnostics needs additional quota
+    // and must never be allowed to keep a poisoned event uploadable forever.
+    store.events = valid;
+    localStorage.setItem(storeKey, JSON.stringify(store));
+    let diagnosticsDropped = 0;
+    try {
+      // Drop the old value before rewriting it: this both purges unsanitized
+      // legacy content and frees its quota for the bounded replacement.
+      localStorage.removeItem(quarantineKey);
+      localStorage.setItem(quarantineKey, JSON.stringify({
+        v: 1, events: previous.concat(diagnostics).slice(-${boundedLimit})
+      }));
+    } catch {
+      diagnosticsDropped = previous.length + diagnostics.length;
+    }
+    return { ok: true, quarantined: diagnostics.length, diagnosticsDropped, remaining: valid.length };
+  } catch { return { ok: false, quarantined: 0, diagnosticsDropped: 0, remaining: null }; } })()`;
 }
 
 const CAMPAIGN_STATE_STATUSES = new Set(['pending', 'active', 'paused', 'exhausted', 'closed']);
@@ -1700,16 +1810,29 @@ async function main() {
 }
 
 // The upload loop proper, run under the report lock. Reads the renderer's
-// buffer over CDP, POSTs ≤10-event batches oldest-first, and prunes only what
-// the platform acknowledged (events arriving mid-upload have a higher seq and
-// survive). A failed batch leaves the buffer untouched for the next trigger.
+// buffer over CDP, quarantines locally-invalid legacy events, POSTs ≤10-event
+// batches oldest-first, and prunes only what the platform acknowledged (events
+// arriving mid-upload have a higher seq and survive). A failed valid batch
+// leaves that batch untouched for the next trigger.
 async function report(base, opts) {
   const cdp = await connectToCodex(opts.port) ?? fail('Codex CDP port not reachable', 2);
   const readStore = () => cdp.eval(`(() => { try { return JSON.parse(localStorage.getItem('__ctxAdEvents')); } catch { return null; } })()`);
-  const totals = { uploaded: 0, accepted: 0, duplicates: 0, eligible: 0, batches: 0 };
+  const totals = {
+    uploaded: 0, accepted: 0, duplicates: 0, eligible: 0, batches: 0,
+    quarantined: 0, quarantineDiagnosticsDropped: 0,
+  };
   const campaignStates = new Map();
   let store = await readStore();
   while (store && Array.isArray(store.events) && store.events.length) {
+    const quarantine = await cdp.eval(quarantineInvalidEventsProgram());
+    if (!quarantine?.ok) {
+      cdp.close();
+      throw new Error('local quarantine failed (buffer kept)');
+    }
+    totals.quarantined += Number(quarantine?.quarantined || 0);
+    totals.quarantineDiagnosticsDropped += Number(quarantine?.diagnosticsDropped || 0);
+    store = await readStore();
+    if (!store || !Array.isArray(store.events) || !store.events.length) break;
     const before = store.events.length;
     const batch = selectBatch(store.events, 10);
     const envelope = { v: store.v ?? 1, installId: store.installId, seq: store.seq ?? 0, events: batch };
@@ -1757,10 +1880,14 @@ async function report(base, opts) {
   cdp.close();
   totals.campaignStates = [...campaignStates.values()];
   if (opts.json) { console.log(JSON.stringify(totals)); return; }
-  console.log(`uploaded ${totals.uploaded} event(s) in ${totals.batches} batch(es) → accepted=${totals.accepted} duplicates=${totals.duplicates} eligible=${totals.eligible}`);
+  console.log(`uploaded ${totals.uploaded} event(s) in ${totals.batches} batch(es) → accepted=${totals.accepted} duplicates=${totals.duplicates} eligible=${totals.eligible} quarantined=${totals.quarantined} quarantineDiagnosticsDropped=${totals.quarantineDiagnosticsDropped}`);
 }
 
-export { loadTheme, loadDistribution, buildCss, rendererProgram, safeHomePosition, resolveAdsApiBase, selectBatch, pruneConfirmed, normalizeCampaignStates };
+export {
+  loadTheme, loadDistribution, buildCss, rendererProgram, safeHomePosition,
+  resolveAdsApiBase, selectBatch, pruneConfirmed, normalizeCampaignStates,
+  uploadEventIssue, partitionUploadEvents, quarantineInvalidEventsProgram,
+};
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => fail(err.message));

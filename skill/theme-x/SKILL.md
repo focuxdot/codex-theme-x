@@ -33,10 +33,23 @@ Parse the user's `$theme-x ...` argument:
 | `list` | Show saved themes (name, variant, **type**, dir); mention the two bundled examples only if the user has none |
 | `switch <name>` | Find the theme dir, run flow B on it |
 | `restore` | `bash scripts/restore.sh` after confirming with the user (app restarts) |
-| `share` / `export` / `导出` / `分享` `[name]` | `node scripts/pack.mjs pack --theme <dir>` → give the user the `.codextheme` file path and the `official.txt` one-liner inside it |
+| `share` / `export` / `导出` / `分享` `[name]` | `node scripts/pack.mjs pack --theme <dir>` → return the exported file using the exact clickable-link contract below; keep `official.txt` inside the pack but do not print its `codex-theme-v1:` one-liner in the conversation. |
 | a `.codextheme` file | `node scripts/pack.mjs unpack --file <f>` then flow B — the pack's `type` (standard/sponsored) is auto-detected on load; **both import identically** |
 | `doctor` | `bash scripts/doctor.sh`, explain the report in plain language |
 | `keep on` / `keep off` | `bash scripts/keeper-install.sh` / `keeper-uninstall.sh` |
+
+### Export response contract
+
+After a successful pack, the final response MUST contain exactly one clickable
+Markdown local-file link and nothing else:
+
+```markdown
+[⬇ 下载 <filename>.codextheme](/absolute/path/to/<filename>.codextheme)
+```
+
+Use the exported file's absolute path as the link target. If the path contains
+spaces, wrap the target in angle brackets. Never return a bare path, an inline
+code path, or a code block instead of the link.
 
 **Two theme types (`type` field).** `standard` (default) = a normal
 personalization theme. `sponsored` = an ad theme that also renders clickable
@@ -170,7 +183,7 @@ It is flow A plus an advertising layer; the difference is creative material
    `tagline` (subtitle) — can each become a clickable link. Each needs **copy
    text** and, if it should jump, a **landing URL** (http/https only — other
    schemes are dropped and the slot stays non-clickable). At least one slot is
-   required. Optionally a **campaign id**.
+   required.
 
    Where the creative comes from, in priority order:
    - **The user's own context is the primary source, and using it is the point.**
@@ -200,7 +213,6 @@ It is flow A plus an advertising layer; the difference is creative material
    ```jsonc
    "type": "sponsored",
    "sponsor": {
-     "campaign": "cmp-...",            // optional, platform/advertiser id
      "disclosure": "Sponsored",        // optional badge on the kicker
      "slots": {
        "kicker":   { "text": "ACME AI",        "url": "https://acme.example/" },
@@ -326,6 +338,10 @@ an existing background image. Color-only themes never trigger a relaunch.
   a graceful app exit, and the next launch catching up leftovers. The renderer
   only drops a one-shot localStorage flag; the keeper turns each flag into one
   `report` (a `report.lock` keeps concurrent triggers mutually exclusive).
+  Before upload, `report` must remove protocol-invalid legacy events from the
+  main buffer before best-effort persistence to a bounded, metadata-only local
+  quarantine, so quota pressure cannot let one bad event reject or permanently
+  block valid events; never copy unknown event fields into that diagnostic store.
   The platform's successful ingest response is also the authority for Campaign
   state. Persist its `campaignStates`; when the current Campaign is
   `exhausted`, keep the theme/artwork and sponsor copy in place, stop recording

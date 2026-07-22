@@ -82,7 +82,7 @@ function makeEl(tag = 'div') {
   return el;
 }
 
-function makeSandbox(initialStorage = {}) {
+function makeSandbox(initialStorage = {}, { language = 'en-US', documentLanguage = 'en' } = {}) {
   const storage = new Map(Object.entries(initialStorage));
   const localStorage = {
     getItem: (k) => (storage.has(k) ? storage.get(k) : null),
@@ -93,11 +93,13 @@ function makeSandbox(initialStorage = {}) {
   const consoleLines = [];
   const opened = [];
   const gs = makeEl('div'); // [data-feature="game-source"]
+  const documentElement = makeEl('html');
+  documentElement.lang = documentLanguage;
   const sandbox = {
     localStorage,
     console: { log: (...a) => consoleLines.push(a.join(' ')) },
     document: {
-      documentElement: makeEl('html'),
+      documentElement,
       body: makeEl('body'),
       title: 'Codex',
       adoptedStyleSheets: [],
@@ -116,6 +118,7 @@ function makeSandbox(initialStorage = {}) {
     },
     window: {},
     self: {},
+    navigator: { language, languages: [language] },
     innerWidth: 1200, innerHeight: 800,
     addEventListener(t, fn) { (winListeners[t] ??= []).push(fn); },
     removeEventListener(t, fn) {
@@ -139,7 +142,8 @@ function makeSandbox(initialStorage = {}) {
   return { sandbox, storage, consoleLines, winListeners, gs, opened };
 }
 
-async function bootPayload({ type = 'sponsored', sponsor = SPONSOR, distribution = null, initialStorage = {} } = {}) {
+async function bootPayload({ type = 'sponsored', sponsor = SPONSOR, distribution = null, initialStorage = {},
+  language = 'en-US', documentLanguage = 'en' } = {}) {
   const theme = await loadTheme(themeFixture({ type, sponsor, distribution }));
   const program = rendererProgram({
     css: buildCss(theme), backgroundDataUrl: theme.backgroundDataUrl,
@@ -147,7 +151,7 @@ async function bootPayload({ type = 'sponsored', sponsor = SPONSOR, distribution
     copy: theme.copy ?? {}, sponsor: theme.sponsor, themeId: theme.id,
     distribution: theme.distribution,
   });
-  const env = makeSandbox(initialStorage);
+  const env = makeSandbox(initialStorage, { language, documentLanguage });
   vm.runInNewContext(program, env.sandbox, { timeout: 5000 });
   return env;
 }
@@ -309,4 +313,25 @@ test('an exhausted Campaign persists, disables earnings/clicks, and marks the He
     },
   });
   assert.ok(reloaded.gs.querySelector('.ctx-sponsor-hero').classList.contains('ctx-campaign-ended'));
+});
+
+test('Campaign exhaustion copy follows the current Codex language and updates live', async () => {
+  // Real Codex currently keeps html lang="en" while navigator.language carries
+  // the Chinese UI locale. This reproduces the exact mismatch from the app.
+  const env = await bootPayload({ language: 'zh-CN', documentLanguage: 'en' });
+  env.sandbox.__ctxTheme.updateCampaignStates([
+    { campaign: 'cmp-flush', status: 'exhausted', earning: false },
+  ], 'https://contextmarket.net');
+
+  const hero = env.gs.querySelector('.ctx-sponsor-hero');
+  assert.equal(hero.querySelector('.ctx-campaign-state-badge').textContent, '投放已结束');
+  assert.equal(hero.querySelector('.ctx-campaign-state-detail').textContent, '此主题后续曝光不再产生收益');
+  assert.equal(hero.querySelector('.ctx-campaign-state-action').textContent, '更换可收益主题 →');
+
+  env.sandbox.navigator.language = 'en-US';
+  env.sandbox.navigator.languages = ['en-US'];
+  env.winListeners.languagechange[0]();
+  assert.equal(hero.querySelector('.ctx-campaign-state-badge').textContent, 'Campaign ended');
+  assert.equal(hero.querySelector('.ctx-campaign-state-detail').textContent, 'Future impressions from this theme will not earn revenue');
+  assert.equal(hero.querySelector('.ctx-campaign-state-action').textContent, 'Choose an earning theme →');
 });

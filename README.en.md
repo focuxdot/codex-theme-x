@@ -2,6 +2,9 @@
 
 **A theme skill for the Codex desktop app: send Codex an image — it redesigns itself into that theme.**
 
+It also creates, exports, and imports sponsored theme packs; platform-issued
+packs can attribute earnings from eligible impressions.
+
 [中文](README.md) · [Theme format](spec/codextheme-format.md)
 
 ![Blank-session page with a theme applied](public/hero.jpg)
@@ -26,7 +29,9 @@ and send `$theme-x` + an image. Done:
 ```
 $theme-x ~/Pictures/miku.jpg     # image → AI palette → full theme
 $theme-x cyberpunk rainy night   # prompt → image → theme
+$theme-x sponsor ~/Pictures/ad.jpg # image + ad copy/links → sponsored theme
 $theme-x list / switch / share (export / 导出 / 分享) / restore / doctor
+$theme-x keep on                 # restore artwork automatically + enable the event bridge
 ```
 
 Switching is one sentence too — `$theme-x switch <name>`, no restart.
@@ -62,6 +67,8 @@ artwork runs full-bleed, and the conversation sits on a soft-edged
   area — tune by talking ("make the sidebar denser"), live
 - **One-file sharing**: `.codextheme` packs; people without the tool can still
   import the embedded official color string
+- **End-to-end sponsored themes**: create a clickable ad Hero, export/import
+  the same pack format, and preserve platform earnings attribution
 - **Always reversible**: `$theme-x restore` returns to stock
 
 ## How it works
@@ -75,36 +82,111 @@ artwork runs full-bleed, and the conversation sits on a soft-edged
 
 No `.app` / `app.asar` modification, no signature tampering, fully reversible.
 
-## Sharing
+## Exporting and importing packs
 
-`$theme-x share` (also `export` / `导出` / `分享`) exports `<id>.codextheme`
-(a zip). Recipients with the tool
-drop it into a Codex chat; recipients without it paste the embedded
-`codex-theme-v1:` string into Settings → Appearance → Import for the colors.
+`$theme-x share` (also `export` / `导出` / `分享`) exports the current theme as
+`<id>.codextheme` (a zip). Standard and sponsored themes use the same format.
+Recipients with theme-x drop the file into a Codex conversation and say
+“install/apply this theme”; theme-x validates `theme.json`, detects `standard`
+or `sponsored`, and applies the correct behavior without a separate ad-import command.
 
-## Sponsored themes (optional)
+A pack contains `theme.json`, artwork, and `official.txt`. A platform-issued
+sponsored pack may also contain `adsmarket-distribution.json`; re-exporting the
+theme preserves that public earnings attribution. Recipients without theme-x
+can paste the embedded `codex-theme-v1:` string into Settings → Appearance →
+Import, but that imports colors only—not artwork, ad links, metrics, or attribution.
+
+## Sponsored themes: creation, distribution, and earnings
 
 Themes come in two types via a `type` field: `standard` (default, a normal
 theme) and `sponsored` (an ad theme). A sponsored theme turns the blank-page
 Hero's three copy lines into **clickable slots that open an advertiser's link**
 in the system browser, with an optional "Sponsored" disclosure badge.
 
-- **The default is always standard** — a sponsored theme is created only on an
-  explicit signal (the word 广告 / 赞助 / sponsored, or `$theme-x sponsor …`), so
-  normal users are never affected.
-- **Open to everyone**: the build flow is the same as a normal theme, you just
-  also supply the copy and the jump links.
-- **The line vs. adware**: links fire only on an explicit click on a clearly
-  marked slot — never auto/hover, never the whole Hero as a hot zone; metrics
-  stay local and count impressions/clicks only (never link content, screen, or
-  keystrokes). Upload is off by default and, when configured, happens only at
-  three event-driven moments — buffer full (10 events), a graceful app exit,
-  and next-launch catch-up — never on a timer.
-- **Still usable after budget exhaustion**: the platform returns Campaign state
-  with the next upload response. The theme keeps its appearance, marks the Hero
-  as ended/no longer earning, and stops new ad impression metering and jumps.
-- **Shares the same way**: a sponsored pack is the same `.codextheme` format and
-  imports identically.
+### 1. Create a sponsored theme
+
+The sponsored flow starts only when the user explicitly says 广告, 赞助,
+`sponsored`, or uses `$theme-x sponsor …`; an ordinary image always creates a
+standard theme. Anyone can create a sponsored theme, for example:
+
+```
+$theme-x sponsor ~/Pictures/product.jpg for ACME, landing at https://acme.example
+$theme-x turn this image into an ad theme; headline: “One API for every model”
+```
+
+The Hero has three independent slots: `kicker`, `greeting`, and `tagline`.
+Each needs copy; its link is optional and must be `http/https`. At least one
+usable slot is required. theme-x first looks for real brand, copy, and domain
+signals in the current project context and reports what it used; it does not
+invent a plausible domain when no reliable source exists.
+
+Links open in the system browser only after an explicit click on that slot—no
+automatic or hover navigation, and no invisible whole-Hero hot zone. The
+`Sponsored` disclosure badge is off by default unless the advertiser or
+platform explicitly requires it.
+
+### 2. Export, forward, and import
+
+After creating or applying a sponsored theme, `$theme-x share` exports it as a
+normal `.codextheme`. A recipient drops that file into a conversation and says
+“install this theme”; the authoritative `type: "sponsored"` restores its ad
+copy, links, and appearance automatically.
+
+A pack issued by the platform for a signed-in user may additionally carry a
+public `beneficiaryUserId`, theme ID, and reporting origin. These are not login
+credentials; they only attribute eligible impressions. If that attributed pack
+is forwarded or re-exported, eligible impressions generated by recipients
+remain attributed to the beneficiary embedded in the pack.
+
+### 3. Metrics and reporting
+
+Only `sponsored` themes enable metrics. A `standard` theme has **zero tracking,
+zero markers, and zero reporting**. Sponsored themes buffer these local events:
+
+- `impression`: the only event that can earn revenue; the Hero must be present,
+  the window focused, and the slot at least 50% visible for one continuous second.
+- `click`: a real click on an ad slot; useful for performance metrics but not billable.
+- `active_day` / `switch_away`: usage and retention events; not billable.
+
+Events first enter a local buffer capped at 10. With `$theme-x keep on`, the
+lightweight keeper reports only on three event-driven triggers: the buffer
+reaches 10, a graceful app exit, or next-launch catch-up. There is **no periodic
+upload**. Network failures preserve valid events, the server deduplicates by
+anonymous install ID plus monotonic sequence, and malformed legacy events are
+quarantined before upload so they cannot block valid data.
+
+Reporting is off by default. Data is sent only when a platform pack supplies a
+validated reporting origin or the user explicitly configures `ADS_API_BASE`.
+A self-made/open-source sponsored theme can still render, link, export, and show
+local metrics, but it does not phone home or automatically earn platform revenue.
+
+Advanced local inspection:
+
+```bash
+node ~/.codex/skills/theme-x/scripts/inject.mjs events
+node ~/.codex/skills/theme-x/scripts/inject.mjs report --json  # manual, when configured
+```
+
+### 4. How earnings are produced
+
+Earnings require all of the following: a sponsored theme, valid platform
+attribution in the pack, a valid Campaign, an impression that passes platform
+validation and frequency caps, and final settlement. **A local impression
+count, an accepted upload, or an `eligible` response is not settled revenue.**
+Clicks and lifecycle events are non-billable. Balances, settlement, and
+withdrawal follow the platform UI and platform rules.
+
+The platform returns authoritative Campaign state with an upload response.
+After the budget is exhausted, the appearance and creative remain usable, but
+the Hero shows that the Campaign ended and future impressions no longer earn;
+new ad-impression metering and advertiser jumps stop, with a route back to the gallery.
+
+### 5. Privacy boundary
+
+Events may contain only sequence, timestamp, event type, slot, Campaign, theme
+ID, and public beneficiary attribution. They never include landing-page
+content, screen or conversation content, or keystrokes. The renderer writes
+only to a local buffer; the host-side helper performs any configured request.
 
 macOS first; Windows is on the roadmap.
 
