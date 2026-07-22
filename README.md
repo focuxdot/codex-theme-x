@@ -90,6 +90,8 @@ Settings → Appearance → Import，但这只导入官方配色，不包含背�
 
 ## 广告主题：制作、分发与收益
 
+![赞助主题效果图](public/sponsored-theme-preview.png)
+
 主题分两类，由 `type` 字段区分：`standard`（默认，普通主题）和 `sponsored`
 （广告主题）。广告主题在普通主题之上，把空白页 Hero 卡的三行文案变成**可点击、
 跳转到广告主链接**的槽位——点击唤起系统浏览器，可选「Sponsored」披露角标。
