@@ -142,8 +142,6 @@ $theme-x 用这张图做广告主题，主标题改成「一个 API 接入所有
 **Codex 更新后主题坏了？** `$theme-x doctor` 看诊断，`restore` 永远是安全出口；
 颜色走官方系统不受影响。
 
-**支持 Windows 吗？** 先 macOS，Windows 在路线图上。
-
 ## 许可
 
 - 非 OpenAI 官方项目。Codex 是其权利人的商标。

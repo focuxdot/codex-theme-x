@@ -188,8 +188,6 @@ ID, and public beneficiary attribution. They never include landing-page
 content, screen or conversation content, or keystrokes. The renderer writes
 only to a local buffer; the host-side helper performs any configured request.
 
-macOS first; Windows is on the roadmap.
-
 ## License
 
 Not affiliated with OpenAI. Codex is a trademark of its owner. MIT License.
