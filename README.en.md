@@ -181,13 +181,6 @@ After the budget is exhausted, the appearance and creative remain usable, but
 the Hero shows that the Campaign ended and future impressions no longer earn;
 new ad-impression metering and advertiser jumps stop, with a route back to the gallery.
 
-### 5. Privacy boundary
-
-Events may contain only sequence, timestamp, event type, slot, Campaign, theme
-ID, and public beneficiary attribution. They never include landing-page
-content, screen or conversation content, or keystrokes. The renderer writes
-only to a local buffer; the host-side helper performs any configured request.
-
 ## License
 
 Not affiliated with OpenAI. Codex is a trademark of its owner. MIT License.
