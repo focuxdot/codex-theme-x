@@ -213,6 +213,26 @@ test('TS5: standard theme never creates the ad buffer or flush state', async () 
   assert.equal(env.winListeners.beforeunload?.length ?? 0, 0);
 });
 
+test('targeted delivery leaves the CPM active-day marker available for a later CPM theme', async () => {
+  const targeted = await bootPayload({
+    distribution: {
+      v: 2,
+      source: 'targeted_auction',
+      auctionId: 'auc_12345678',
+      targetUserId: 'usr_target',
+      themeId: 'flush-test',
+      adsApiBase: 'https://contextmarket.net',
+    },
+  });
+  assert.equal(targeted.storage.has('__ctxAdEvents'), false);
+  assert.equal(targeted.storage.has('__ctxAdActiveDay'), false);
+  assert.equal(JSON.parse(targeted.storage.get('__ctxAuctionEvents')).queues.auc_12345678.events[0].type, 'activation');
+
+  const cpm = await bootPayload({ initialStorage: Object.fromEntries(targeted.storage) });
+  assert.equal(readEvents(cpm.storage).filter((event) => event.type === 'active_day').length, 1);
+  assert.ok(cpm.storage.has('__ctxAdActiveDay'));
+});
+
 test('TS1: the 10th buffered event raises exactly one buffer-full signal', async () => {
   const env = await bootPayload();
   // boot already buffered one active_day event

@@ -244,6 +244,26 @@ adsMarket 登录用户下载广告主题时，浏览器在基础包中加入：
 `theme.json.id`，`adsApiBase` 必须是 http(s) origin，否则加载失败。应用成功后 theme-x 把
 平台地址保存到本地上报配置；重新导出主题时保留该文件。
 
+定向拍卖交付使用独立的 v2 合约：
+
+```json
+{
+  "v": 2,
+  "source": "targeted_auction",
+  "auctionId": "auc_<opaque-id>",
+  "targetUserId": "usr_<target-user>",
+  "themeId": "acme",
+  "adsApiBase": "https://contextmarket.net"
+}
+```
+
+v2 包只发给已经接受该拍卖的目标账号，`auctionId`、`targetUserId` 和 `themeId` 必须与
+平台签发的交付记录一致。它不是 CPM 分发包，安装后不得产生 impression/click/active_day
+事件。只记录 `activation`、真实切换主题时的 `deactivated`，以及平台到期时间触发的一次
+`completion_check`；事件进入独立的 `__ctxAuctionEvents` 队列，由同一个一次性 flush
+桥接上传到 `/api/auction-events`。不得增加心跳或累计有效使用时长。服务端返回的状态和
+时间是交付与结算的唯一权威；客户端本地时钟只用于按服务端时间偏移安排到期检查。
+
 埋点是 **广告主题的属性**：整个计量+上报子系统只在 `type: "sponsored"` 的注入
 payload 内运行，**standard 主题零埋点、零 marker、零上报**（无论本地生成还是导入）。
 口径对齐 `research/impression-feasibility.md`。

@@ -342,6 +342,12 @@ an existing background image. Color-only themes never trigger a relaunch.
   main buffer before best-effort persistence to a bounded, metadata-only local
   quarantine, so quota pressure cannot let one bad event reject or permanently
   block valid events; never copy unknown event fields into that diagnostic store.
+  A platform-issued targeted-auction v2 distribution is a separate delivery
+  contract: never emit CPM events for it. Emit only `activation`,
+  `deactivated` on a real theme switch, and one server-due
+  `completion_check`; never add heartbeats or cumulative active-time tracking.
+  Store these in the dedicated auction queue and upload them through the same
+  one-shot flush bridge to `/api/auction-events`.
   The platform's successful ingest response is also the authority for Campaign
   state. Persist its `campaignStates`; when the current Campaign is
   `exhausted`, keep the theme/artwork and sponsor copy in place, stop recording

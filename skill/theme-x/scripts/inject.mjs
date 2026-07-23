@@ -27,7 +27,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const PAYLOAD_VERSION = 12;
+const PAYLOAD_VERSION = 13;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const IMAGE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -35,6 +35,7 @@ const IMAGE_MIME = {
 };
 const DISTRIBUTION_FILE = 'adsmarket-distribution.json';
 const BENEFICIARY_RE = /^[a-zA-Z0-9_-]{1,128}$/;
+const AUCTION_ID_RE = /^auc_[a-zA-Z0-9_-]{8,64}$/;
 
 function parseArgs(argv) {
   const [cmd, ...rest] = argv;
@@ -236,11 +237,22 @@ async function loadDistribution(themeDir, themeId) {
     if (error?.code === 'ENOENT') return null;
     fail(`${DISTRIBUTION_FILE}: invalid JSON`);
   }
-  const beneficiaryUserId = String(raw?.beneficiaryUserId || '');
   const adsApiBase = safeAdsApiBase(raw?.adsApiBase);
-  if (raw?.v !== 1 || raw?.themeId !== themeId || !BENEFICIARY_RE.test(beneficiaryUserId) || !adsApiBase)
-    fail(`${DISTRIBUTION_FILE}: invalid or mismatched adsMarket attribution`);
-  return { v: 1, beneficiaryUserId, themeId, source: raw.source === 'gallery' ? 'gallery' : null, adsApiBase };
+  if (raw?.v === 1) {
+    const beneficiaryUserId = String(raw?.beneficiaryUserId || '');
+    if (raw?.themeId !== themeId || !BENEFICIARY_RE.test(beneficiaryUserId) || !adsApiBase)
+      fail(`${DISTRIBUTION_FILE}: invalid or mismatched adsMarket attribution`);
+    return { v: 1, beneficiaryUserId, themeId, source: raw.source === 'gallery' ? 'gallery' : null, adsApiBase };
+  }
+  if (raw?.v === 2) {
+    const auctionId = String(raw?.auctionId || '');
+    const targetUserId = String(raw?.targetUserId || '');
+    if (raw?.source !== 'targeted_auction' || raw?.themeId !== themeId || !AUCTION_ID_RE.test(auctionId) ||
+        !BENEFICIARY_RE.test(targetUserId) || !adsApiBase)
+      fail(`${DISTRIBUTION_FILE}: invalid or mismatched targeted auction delivery`);
+    return { v: 2, source: 'targeted_auction', auctionId, targetUserId, themeId, adsApiBase };
+  }
+  fail(`${DISTRIBUTION_FILE}: unsupported distribution version`);
 }
 
 function safeThemeAssetName(value, field) {
@@ -1068,6 +1080,7 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
   // greeting, ::after tagline) which cannot host a link, so we replace them.
   const sponsor = ${JSON.stringify(sponsor ?? null)};
   const beneficiaryUserId = ${JSON.stringify(distribution?.beneficiaryUserId ?? null)};
+  const targetedDelivery = ${JSON.stringify(distribution?.v === 2 ? distribution : null)};
   const themeId = ${JSON.stringify(themeId ?? name)};
   const initialGalleryUrl = ${JSON.stringify(distribution?.adsApiBase ?? null)};
   let sponsorObserver = null, sponsorTimer = 0, sponsorIO = null;
@@ -1149,6 +1162,7 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
   // theme-level. Each builder emits exactly its allowed key set (whitelist by
   // construction — an extra key makes the platform reject the whole batch).
   const recordSlotEvent = (type, slot) => {
+    if (targetedDelivery) return;
     if (campaignEnded) return;
     pushAdEvent((seq) => {
     const event = { s: seq, t: Date.now(), type: type, slot: slot,
@@ -1157,9 +1171,89 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     return event;
     });
   };
-  const recordThemeEvent = (type, theme) => pushAdEvent((seq) => ({
-    s: seq, t: Date.now(), type: type, theme: theme,
-  }));
+  const recordThemeEvent = (type, theme) => {
+    if (targetedDelivery) return;
+    pushAdEvent((seq) => ({ s: seq, t: Date.now(), type: type, theme: theme }));
+  };
+
+  // Targeted auction delivery uses a separate, tiny lifecycle queue. It does
+  // not count active minutes and never emits heartbeats: activation starts one
+  // continuous wall-clock window, switching away resets it, and a single
+  // completion_check is scheduled for the server-confirmed due time.
+  const AUCTION_KEY = '__ctxAuctionEvents';
+  const AUCTION_STATE_KEY = '__ctxAuctionStates';
+  let auctionCompletionTimer = 0;
+  const readAuctionRoot = (key, fallback) => {
+    try {
+      const value = JSON.parse(localStorage.getItem(key));
+      return value && typeof value === 'object' ? value : fallback;
+    } catch { return fallback; }
+  };
+  const ensureAuctionQueue = () => {
+    const root = readAuctionRoot(AUCTION_KEY, { v: 1, queues: {} });
+    if (!root.queues || typeof root.queues !== 'object') root.queues = {};
+    let queue = targetedDelivery ? root.queues[targetedDelivery.auctionId] : null;
+    if (!queue || typeof queue !== 'object') queue = {
+      v: 1, auctionId: targetedDelivery.auctionId,
+      adsApiBase: targetedDelivery.adsApiBase, installId: ctxRandomUuid(), seq: 0, events: [],
+    };
+    if (!Array.isArray(queue.events)) queue.events = [];
+    if (!queue.installId) queue.installId = ctxRandomUuid();
+    queue.adsApiBase = targetedDelivery.adsApiBase;
+    root.queues[targetedDelivery.auctionId] = queue;
+    return { root, queue };
+  };
+  const pushAuctionEvent = (type) => {
+    if (!targetedDelivery) return;
+    try {
+      const { root: auctionRoot, queue } = ensureAuctionQueue();
+      if (['activation', 'completion_check'].includes(type) &&
+          queue.events.some((event) => event?.type === type)) return;
+      if (queue.events.length >= 10) {
+        localStorage.setItem(AUCTION_KEY, JSON.stringify(auctionRoot));
+        signalAdFlush('auction-buffer-full');
+        return;
+      }
+      queue.seq = Number(queue.seq || 0) + 1;
+      queue.events.push({ s: queue.seq, t: Date.now(), type: type, theme: themeId });
+      localStorage.setItem(AUCTION_KEY, JSON.stringify(auctionRoot));
+      signalAdFlush('auction-' + type);
+    } catch {}
+  };
+  const scheduleAuctionCompletion = (state) => {
+    clearTimeout(auctionCompletionTimer);
+    auctionCompletionTimer = 0;
+    if (!targetedDelivery || state?.status !== 'active' || !Number.isFinite(Number(state?.dueAt))) return;
+    const serverAdjustedNow = Date.now() + Number(state.clockOffsetMs || 0);
+    const delay = Number(state.dueAt) - serverAdjustedNow;
+    if (delay <= 0) { pushAuctionEvent('completion_check'); return; }
+    auctionCompletionTimer = setTimeout(() => {
+      const states = readAuctionRoot(AUCTION_STATE_KEY, { v: 1, auctions: {} });
+      scheduleAuctionCompletion(states.auctions?.[targetedDelivery.auctionId]);
+    }, Math.min(delay, 2147483647));
+  };
+  const updateAuctionState = (auction, serverNow) => {
+    if (!targetedDelivery || !auction || auction.id !== targetedDelivery.auctionId) return;
+    const states = readAuctionRoot(AUCTION_STATE_KEY, { v: 1, auctions: {} });
+    if (!states.auctions || typeof states.auctions !== 'object') states.auctions = {};
+    const observedAt = Date.now();
+    const state = {
+      status: String(auction.status || ''),
+      dueAt: auction.due_at == null ? null : Number(auction.due_at),
+      clockOffsetMs: Number.isFinite(Number(serverNow)) ? Number(serverNow) - observedAt : 0,
+      updatedAt: observedAt,
+    };
+    states.auctions[targetedDelivery.auctionId] = state;
+    try { localStorage.setItem(AUCTION_STATE_KEY, JSON.stringify(states)); } catch {}
+    if (state.status === 'accepted') pushAuctionEvent('activation');
+    else scheduleAuctionCompletion(state);
+  };
+  if (targetedDelivery) {
+    const states = readAuctionRoot(AUCTION_STATE_KEY, { v: 1, auctions: {} });
+    const state = states.auctions?.[targetedDelivery.auctionId];
+    if (state?.status === 'active') scheduleAuctionCompletion(state);
+    else if (!['fulfilled', 'settled'].includes(state?.status)) pushAuctionEvent('activation');
+  }
 
   const openSponsor = (url) => { try { window.open(url, '_blank', 'noopener'); } catch {} };
 
@@ -1352,17 +1446,20 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     if (s && Array.isArray(s.events) && s.events.length) signalAdFlush('normal-exit');
   };
   if (sponsor) {
-    // active_day: one per calendar day while an ad theme is applied (L1 applied
-    // retention signal). Fires on the day's first ad-payload load.
-    try {
-      // Local calendar day (not UTC): "applied today" should mean the user's day.
-      const now = new Date();
-      const today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
-      if (localStorage.getItem(AD_DAY_KEY) !== today) {
-        recordThemeEvent('active_day', themeId);
-        localStorage.setItem(AD_DAY_KEY, today);
-      }
-    } catch {}
+    // active_day is CPM-only. A targeted delivery must not claim the shared
+    // daily marker, or a CPM theme applied later that day would be undercounted.
+    if (!targetedDelivery) {
+      // One per local calendar day while a CPM ad theme is applied (L1 applied
+      // retention signal). Fires on the day's first CPM payload load.
+      try {
+        const now = new Date();
+        const today = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+        if (localStorage.getItem(AD_DAY_KEY) !== today) {
+          recordThemeEvent('active_day', themeId);
+          localStorage.setItem(AD_DAY_KEY, today);
+        }
+      } catch {}
+    }
     // Same settle-not-fight pattern as the copy engine: React repaints on
     // remount and wipes our node; the observer re-inserts it (idempotent).
     sponsorObserver = new MutationObserver(() => {
@@ -1388,12 +1485,15 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     name: ${JSON.stringify(name)},
     setVar: applyVar,
     updateCampaignStates,
+    updateAuctionState,
     remove(opts) {
       // switch_away: emitted by the AD theme's OWN teardown when leaving to a
       // different theme (opts.next) or to native (next === null). Idempotent
       // re-apply/tune passes the same id → no event. Standard themes never reach
       // this branch (sponsor is null), so they emit nothing on removal either.
       if (sponsor && opts && opts.next !== themeId) recordThemeEvent('switch_away', themeId);
+      if (targetedDelivery && opts && opts.next !== themeId) pushAuctionEvent('deactivated');
+      clearTimeout(auctionCompletionTimer);
       if (sponsorObserver) sponsorObserver.disconnect();
       clearTimeout(sponsorTimer);
       if (sponsorIO) sponsorIO.disconnect();
@@ -1817,11 +1917,75 @@ async function main() {
 async function report(base, opts) {
   const cdp = await connectToCodex(opts.port) ?? fail('Codex CDP port not reachable', 2);
   const readStore = () => cdp.eval(`(() => { try { return JSON.parse(localStorage.getItem('__ctxAdEvents')); } catch { return null; } })()`);
+  const readAuctionStore = () => cdp.eval(`(() => { try { return JSON.parse(localStorage.getItem('__ctxAuctionEvents')); } catch { return null; } })()`);
   const totals = {
     uploaded: 0, accepted: 0, duplicates: 0, eligible: 0, batches: 0,
     quarantined: 0, quarantineDiagnosticsDropped: 0,
+    auctionUploaded: 0, auctionAccepted: 0, auctionDuplicates: 0, auctionBatches: 0,
   };
   const campaignStates = new Map();
+  let auctionRoot = await readAuctionStore();
+  for (const auctionId of Object.keys(auctionRoot?.queues || {}).sort()) {
+    let queue = auctionRoot.queues[auctionId];
+    while (queue && Array.isArray(queue.events) && queue.events.length) {
+      const batch = selectBatch(queue.events, 10);
+      const endpoint = safeAdsApiBase(queue.adsApiBase) || base;
+      let resp;
+      try {
+        const response = await fetch(`${endpoint}/api/auction-events`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            v: 1, auctionId: queue.auctionId,
+            installId: queue.installId, events: batch,
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        resp = await response.json();
+      } catch (error) {
+        cdp.close();
+        throw new Error(`auction upload failed (buffer kept): ${error.message}`);
+      }
+      const batchMaxSeq = batch[batch.length - 1].s;
+      await cdp.eval(`(() => { try {
+        const root = JSON.parse(localStorage.getItem('__ctxAuctionEvents'));
+        const queue = root?.queues?.[${JSON.stringify(auctionId)}];
+        if (queue) {
+          queue.events = (queue.events || []).filter((event) => event.s > ${batchMaxSeq});
+          localStorage.setItem('__ctxAuctionEvents', JSON.stringify(root));
+        }
+        const auction = ${JSON.stringify(resp.auction || null)};
+        const serverNow = ${JSON.stringify(resp.receivedAt || null)};
+        if (auction && auction.id) {
+          let states = { v: 1, auctions: {} };
+          try {
+            const parsed = JSON.parse(localStorage.getItem('__ctxAuctionStates'));
+            if (parsed && typeof parsed === 'object') states = parsed;
+          } catch {}
+          if (!states.auctions || typeof states.auctions !== 'object') states.auctions = {};
+          const observedAt = Date.now();
+          states.auctions[auction.id] = {
+            status: String(auction.status || ''),
+            dueAt: auction.due_at == null ? null : Number(auction.due_at),
+            clockOffsetMs: Number.isFinite(Number(serverNow)) ? Number(serverNow) - observedAt : 0,
+            updatedAt: observedAt,
+          };
+          localStorage.setItem('__ctxAuctionStates', JSON.stringify(states));
+        }
+        if (window.__ctxTheme && typeof window.__ctxTheme.updateAuctionState === 'function') {
+          window.__ctxTheme.updateAuctionState(auction, serverNow);
+        }
+      } catch {} })()`);
+      totals.auctionUploaded += batch.length;
+      totals.auctionAccepted += Number(resp.accepted || 0);
+      totals.auctionDuplicates += Number(resp.duplicates || 0);
+      totals.auctionBatches += 1;
+      auctionRoot = await readAuctionStore();
+      queue = auctionRoot?.queues?.[auctionId];
+      if (queue && Array.isArray(queue.events) && queue.events.some((event) => event.s <= batchMaxSeq)) break;
+    }
+  }
   let store = await readStore();
   while (store && Array.isArray(store.events) && store.events.length) {
     const quarantine = await cdp.eval(quarantineInvalidEventsProgram());
@@ -1880,7 +2044,7 @@ async function report(base, opts) {
   cdp.close();
   totals.campaignStates = [...campaignStates.values()];
   if (opts.json) { console.log(JSON.stringify(totals)); return; }
-  console.log(`uploaded ${totals.uploaded} event(s) in ${totals.batches} batch(es) → accepted=${totals.accepted} duplicates=${totals.duplicates} eligible=${totals.eligible} quarantined=${totals.quarantined} quarantineDiagnosticsDropped=${totals.quarantineDiagnosticsDropped}`);
+  console.log(`uploaded ${totals.uploaded} CPM event(s) and ${totals.auctionUploaded} auction event(s) → CPM accepted=${totals.accepted} auction accepted=${totals.auctionAccepted} duplicates=${totals.duplicates + totals.auctionDuplicates} quarantined=${totals.quarantined}`);
 }
 
 export {
