@@ -61,19 +61,33 @@ function fail(msg, code = 1) {
 
 // ---------------------------------------------------------------- CDP client
 
-async function findTarget(port) {
-  let list;
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) });
-    list = await res.json();
-  } catch {
-    return null;
-  }
-  return list.find((t) =>
+function selectTarget(list) {
+  if (!Array.isArray(list)) return null;
+  const pages = list.filter((t) =>
     t.type === 'page' &&
     typeof t.url === 'string' && t.url.startsWith('app://') &&
     typeof t.webSocketDebuggerUrl === 'string'
-  ) ?? null;
+  );
+  // Newer Codex builds expose a second app:// page for the avatar overlay.
+  // It contains enough shell markup to pass the identity probe, but injecting
+  // there leaves the visible main window untouched. Prefer the primary page
+  // while retaining the old single-page fallback.
+  return pages.find((t) => {
+    try {
+      return new URL(t.url).searchParams.get('initialRoute') !== '/avatar-overlay';
+    } catch {
+      return false;
+    }
+  }) ?? pages[0] ?? null;
+}
+
+async function findTarget(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(3000) });
+    return selectTarget(await res.json());
+  } catch {
+    return null;
+  }
 }
 
 function assertLoopback(wsUrl, port) {
@@ -572,7 +586,7 @@ function buildCss(theme) {
     rgba(var(--ctx-surface-rgb), var(--ctx-home-backdrop-a));
   backdrop-filter: blur(var(--ctx-home-backdrop-blur));
 }
-:root.ctx-themed body:has(section[class*="home-suggestions"]) div[class*="home-main-content"] {
+:root.ctx-themed body:has(section[class*="home-suggestions"]) div[class~="home-main-content"] {
   margin: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
@@ -584,30 +598,23 @@ function buildCss(theme) {
   --thread-content-max-width: min(1040px, calc(100cqw - 44px)) !important;
   overflow-x: hidden !important;
 }
-:root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) > div:first-child {
-  /* Breathing room above the hero: on the calm canvas the hero shouldn't glue
-     to the nav — a viewport-proportional top band gives the page a gallery
-     rhythm (band, hero, cards, space, composer) instead of top-heavy stacking. */
-  padding-top: clamp(20px, 6.5vh, 84px) !important;
-  min-height: 100% !important;
-}
-:root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) > div:first-child > div:first-child {
-  flex: 0 0 calc(var(--ctx-home-hero-h) + 174px) !important;
-  min-height: calc(var(--ctx-home-hero-h) + 174px) !important;
-  align-items: flex-start !important;
-  padding-bottom: 0 !important;
-}
-/* The native greeting container becomes the hero; the native suggestion row
-   remains live and is positioned directly beneath it. */
-:root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) > div:first-child > div:first-child > div:first-child {
+/* Anchor the Hero to the stable greeting node rather than to positional
+   ancestors. Recent Codex builds insert a home-banners sibling ahead of the
+   content and expose home-main-content as a container-name utility; positional
+   selectors pushed the real content below the viewport after that change. */
+:root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) div:has(> [data-feature="game-source"]) {
   position: relative !important;
   isolation: isolate;
   width: calc(100% - 44px) !important;
   max-width: none !important;
   height: var(--ctx-home-hero-h) !important;
   min-height: var(--ctx-home-hero-h) !important;
-  flex: 0 1 auto !important;
-  padding: 0 !important;
+  flex: 0 0 auto !important;
+  box-sizing: border-box !important;
+  align-items: flex-start !important;
+  justify-content: center !important;
+  gap: 0 !important;
+  padding: 0 clamp(26px, 4vw, 48px) !important;
   border: 1px solid var(--ctx-hairline) !important;
   border-radius: 26px !important;
   overflow: visible !important;
@@ -624,16 +631,11 @@ function buildCss(theme) {
   background-position: center, var(--ctx-home-art-pos) !important;
   box-shadow: 0 18px 54px var(--ctx-cover-shadow), inset 0 1px rgba(255,255,255,0.08) !important;
 }
-:root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) > div:first-child > div:first-child > div:first-child > div:first-child {
+:root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) div:has(> [data-feature="game-source"]) > [data-feature="game-source"] {
   position: relative;
   z-index: 1;
-  height: 100%;
-  align-items: center !important;
-  justify-content: flex-start !important;
-  padding-left: clamp(26px, 4vw, 48px) !important;
-}
-:root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
   width: min(54%, 540px) !important;
+  flex: 0 0 auto !important;
   align-items: flex-start !important;
   gap: 0 !important;
 }
@@ -671,12 +673,6 @@ function buildCss(theme) {
   line-height: 1.5;
   font-weight: 500;
   letter-spacing: 0.02em;
-}
-:root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) > div:first-child > div:first-child > div:first-child > div:nth-child(2) {
-  left: 14px !important;
-  right: 14px !important;
-  top: 100% !important;
-  margin-top: 14px !important;
 }
 :root.ctx-themed section[class*="home-suggestions"] {
   overflow: visible !important;
@@ -746,10 +742,10 @@ function buildCss(theme) {
   :root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) {
     --thread-content-max-width: min(820px, calc(100cqw - 28px)) !important;
   }
-  :root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) > div:first-child > div:first-child > div:first-child {
+  :root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) div:has(> [data-feature="game-source"]) {
     width: calc(100% - 28px) !important;
   }
-  :root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) > div:first-child > div:first-child > div:first-child > div:first-child > div:first-child {
+  :root.ctx-themed [role="main"]:has(section[class*="home-suggestions"]) div:has(> [data-feature="game-source"]) > [data-feature="game-source"] {
     width: 68% !important;
   }
   :root.ctx-themed section[class*="home-suggestions"] button {
@@ -2048,7 +2044,7 @@ async function report(base, opts) {
 }
 
 export {
-  loadTheme, loadDistribution, buildCss, rendererProgram, safeHomePosition,
+  loadTheme, loadDistribution, buildCss, rendererProgram, safeHomePosition, selectTarget,
   resolveAdsApiBase, selectBatch, pruneConfirmed, normalizeCampaignStates,
   uploadEventIssue, partitionUploadEvents, quarantineInvalidEventsProgram,
 };

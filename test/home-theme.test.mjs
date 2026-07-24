@@ -70,6 +70,15 @@ test('home focal point only accepts the supported CSS position subset', () => {
   assert.equal(safeHomePosition('center; color: red'), '72% center');
 });
 
+test('home CSS anchors the hero without matching the new container-name utility', async () => {
+  const css = buildCss(await loadTheme(fixture({ file: 'hero.png' })));
+
+  assert.match(css, /div\[class~="home-main-content"\]/);
+  assert.doesNotMatch(css, /div\[class\*="home-main-content"\]/);
+  assert.match(css, /div:has\(> \[data-feature="game-source"\]\)/);
+  assert.doesNotMatch(css, /> div:first-child > div:first-child > div:first-child/);
+});
+
 test('codextheme packing includes an optional separate home hero', () => {
   const dir = fixture({ file: 'hero.png' });
   const out = path.join(dir, 'home-test.codextheme');
