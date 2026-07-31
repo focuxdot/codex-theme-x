@@ -41,7 +41,29 @@ if [ -f "$POINTER" ]; then
   if cdp_reachable; then
     STATUS="$("$NODE" "$SCRIPT_DIR/inject.mjs" status --port "$CTX_PORT" --json 2>/dev/null || echo '{}')"
     case "$(printf '%s' "$STATUS" | "$NODE" -e 'process.stdin.on("data",d=>console.log(JSON.parse(d).injected))' 2>/dev/null)" in
-      true)  ok "background payload injected" ;;
+      true)
+        ok "background payload injected"
+        SURFACE_STATE="$(printf '%s' "$STATUS" | "$NODE" -e '
+          process.stdin.on("data", d => {
+            const h = JSON.parse(d).health;
+            if (!h) return console.log("unknown");
+            if (!h.mainFound) return console.log("missing");
+            console.log(h.mainSurfaceApplied ? "ok" : "bad");
+          })' 2>/dev/null || echo unknown)"
+        case "$SURFACE_STATE" in
+          ok)
+            SURFACE_DETAIL="$(printf '%s' "$STATUS" | "$NODE" -e '
+              process.stdin.on("data", d => {
+                const h = JSON.parse(d).health;
+                console.log(`actual ${h.actualPanelOpacity}, configured ${h.expectedPanelOpacity}`);
+              })' 2>/dev/null || true)"
+            ok "main surface follows theme opacity ($SURFACE_DETAIL)"
+            ;;
+          bad) bad "main surface does NOT follow theme opacity (Codex likely changed its DOM/CSS)" ;;
+          missing) bad "Codex main surface was not found (app internals changed)" ;;
+          *) warn "payload is older than the live surface check; re-apply the theme" ;;
+        esac
+        ;;
       false) bad "theme is set but the background is NOT injected (run apply, or install the keeper)" ;;
       *)     warn "could not query injection state" ;;
     esac

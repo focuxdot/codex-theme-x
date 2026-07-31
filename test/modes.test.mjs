@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { loadTheme, rendererProgram } from '../skill/theme-x/scripts/inject.mjs';
+import { buildCss, loadTheme, rendererProgram } from '../skill/theme-x/scripts/inject.mjs';
 
 const WRITE_COLORS = new URL('../skill/theme-x/scripts/write-colors.mjs', import.meta.url).pathname;
 
@@ -84,6 +84,14 @@ test('rendererProgram embeds a live per-mode density swap for an auto theme', as
   assert.match(program, /"--ctx-side-a":"0\.85"/);
   // per-mode accent swap
   assert.match(program, /"--ctx-accent-rgb":"177, 59, 36"/); // #B13B24 light
+  assert.match(program, /mainSurfaceApplied/);
+  assert.match(program, /expectedPanelOpacity/);
+});
+
+test('main surface glass targets the semantic landmark, not a volatile Codex class', async () => {
+  const css = buildCss(await loadTheme(autoFixture()));
+  assert.match(css, /:root\.ctx-themed main \{/);
+  assert.doesNotMatch(css, /main\.main-surface/);
 });
 
 test('single-mode theme yields identical light/dark sets (swap is a no-op)', async () => {

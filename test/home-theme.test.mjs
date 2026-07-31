@@ -79,6 +79,15 @@ test('home CSS anchors the hero without matching the new container-name utility'
   assert.doesNotMatch(css, /> div:first-child > div:first-child > div:first-child/);
 });
 
+test('home CSS removes both generations of the header/content separator', async () => {
+  const css = buildCss(await loadTheme(fixture({ file: 'hero.png' })));
+
+  assert.match(css, /\.app-shell-main-content-top-fade/);
+  assert.match(css, /\[class\*="_MainContentTopFade_"\]/);
+  assert.match(css, /\[class\*="_MainContentFrame_"\]/);
+  assert.match(css, /border-top-color: transparent !important/);
+});
+
 test('codextheme packing includes an optional separate home hero', () => {
   const dir = fixture({ file: 'hero.png' });
   const out = path.join(dir, 'home-test.codextheme');

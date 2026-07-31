@@ -27,7 +27,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const PAYLOAD_VERSION = 13;
+const PAYLOAD_VERSION = 15;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const IMAGE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -479,8 +479,11 @@ function buildCss(theme) {
   background-color: rgba(var(--ctx-surface-rgb), var(--ctx-side-a)) !important;
   backdrop-filter: blur(var(--ctx-glass-blur));
 }
-/* Soft enhancements — fine if these selectors stop matching after an update. */
-:root.ctx-themed main.main-surface {
+/* The main landmark is substantially more stable than Codex's styling class.
+   Builds before 26.727 used main-surface; newer builds use a hashed CSS
+   Modules class (_MainContentSurface_*). Target the semantic element so an
+   app update cannot silently put an opaque plate back over the artwork. */
+:root.ctx-themed main {
   background-color: rgba(var(--ctx-surface-rgb), var(--ctx-panel-a)) !important;
   border-color: transparent !important; /* zoning is veil contrast, not lines */
   /* The app outlines the main card with a 0.5px ring box-shadow — over
@@ -528,8 +531,16 @@ function buildCss(theme) {
 /* The nav header is already transparent; the only header/content divider is
    this native fade band (surface → transparent). Over full-strength artwork
    it reads as a stray light strip, so the art runs true full-bleed instead. */
-:root.ctx-themed .app-shell-main-content-top-fade {
-  background-image: none !important;
+:root.ctx-themed .app-shell-main-content-top-fade,
+:root.ctx-themed [class*="_MainContentTopFade_"] {
+  display: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+/* Newer CSS-Modules builds also draw a hairline on the content frame directly
+   beneath the fade. Remove that second half of the separator as well. */
+:root.ctx-themed [class*="_MainContentFrame_"] {
+  border-top-color: transparent !important;
 }
 /* Same family, bottom edge: the composer sits on a scroll-mask plate (solid
    surface gradient, wider than the composer) that fades messages out behind
@@ -757,7 +768,7 @@ function buildCss(theme) {
    fully transparent main area stays readable over busy artwork. Inherits to
    all text in the main surface; invisible where text sits on its own solid
    background (same-color glow on same-color surface). */
-:root.ctx-themed main.main-surface {
+:root.ctx-themed main {
   text-shadow:
     0 0 2px rgba(var(--ctx-surface-rgb), var(--ctx-halo)),
     0 0 8px rgba(var(--ctx-surface-rgb), calc(var(--ctx-halo) * 0.85)),
@@ -969,6 +980,38 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     tuneVars[prop] = value;
     const body = Object.entries(tuneVars).map(([k, v]) => k + ': ' + v + ';').join(' ');
     tuneSheet.replaceSync(':root.ctx-themed { ' + body + ' }');
+  };
+
+  // Report whether the live main surface actually follows the configured
+  // panel opacity. Merely finding window.__ctxTheme is insufficient: a Codex
+  // update can rename a selector while leaving the payload itself alive.
+  const colorAlpha = (value) => {
+    if (!value || value === 'transparent') return 0;
+    const match = /^rgba?\\(([^)]+)\\)$/.exec(value.trim());
+    if (!match) return null;
+    const parts = match[1].split(',').map((part) => part.trim());
+    return parts.length < 4 ? 1 : Number(parts[3]);
+  };
+  const health = () => {
+    const main = document.querySelector('main');
+    const rootStyle = getComputedStyle(root);
+    const expectedPanelOpacity = Number.parseFloat(
+      typeof rootStyle.getPropertyValue === 'function'
+        ? rootStyle.getPropertyValue('--ctx-panel-a').trim()
+        : ''
+    );
+    const mainBackground = main ? getComputedStyle(main).backgroundColor : null;
+    const actualPanelOpacity = colorAlpha(mainBackground);
+    return {
+      mainFound: Boolean(main),
+      mainBackground,
+      expectedPanelOpacity: Number.isFinite(expectedPanelOpacity) ? expectedPanelOpacity : null,
+      actualPanelOpacity: Number.isFinite(actualPanelOpacity) ? actualPanelOpacity : null,
+      mainSurfaceApplied: Boolean(main) && Number.isFinite(expectedPanelOpacity) &&
+        Number.isFinite(actualPanelOpacity) && Math.abs(actualPanelOpacity - expectedPanelOpacity) <= 0.03,
+      artworkPresent: typeof rootStyle.getPropertyValue === 'function' &&
+        Boolean(rootStyle.getPropertyValue('--ctx-bg-art').trim()),
+    };
   };
 
   // Mode sync: every veil color must follow the APP's live palette, not the
@@ -1480,6 +1523,7 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     version: ${PAYLOAD_VERSION},
     name: ${JSON.stringify(name)},
     setVar: applyVar,
+    health,
     updateCampaignStates,
     updateAuctionState,
     remove(opts) {
@@ -1523,7 +1567,7 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
       delete window.__ctxTheme;
     },
   };
-  return { ok: true, glassed: glassed.length };
+  return { ok: true, glassed: glassed.length, health: health() };
 })()`;
 }
 
@@ -1697,16 +1741,22 @@ async function main() {
     const status = { port: opts.port, reachable: Boolean(target), injected: false, theme: null };
     if (target) {
       const cdp = await connectToCodex(opts.port);
-      const t = await cdp.eval('window.__ctxTheme ? { version: window.__ctxTheme.version, name: window.__ctxTheme.name } : null');
+      const t = await cdp.eval(`window.__ctxTheme ? {
+        version: window.__ctxTheme.version,
+        name: window.__ctxTheme.name,
+        health: typeof window.__ctxTheme.health === 'function' ? window.__ctxTheme.health() : null
+      } : null`);
       status.injected = Boolean(t);
       status.theme = t?.name ?? null;
       status.payloadVersion = t?.version ?? null;
+      status.health = t?.health ?? null;
       cdp.close();
     }
     console.log(opts.json ? JSON.stringify(status) : [
       `CDP port ${status.port}: ${status.reachable ? 'reachable' : 'NOT reachable (start Codex with the debug flag)'}`,
       `background injected: ${status.injected ? `yes (${status.theme})` : 'no'}`,
-    ].join('\n'));
+      status.health ? `main surface: ${status.health.mainSurfaceApplied ? 'matches theme opacity' : 'OPAQUE / selector mismatch'} (${status.health.mainBackground})` : null,
+    ].filter(Boolean).join('\n'));
     process.exit(status.reachable ? 0 : 2);
   }
 
