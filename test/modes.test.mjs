@@ -86,12 +86,23 @@ test('rendererProgram embeds a live per-mode density swap for an auto theme', as
   assert.match(program, /"--ctx-accent-rgb":"177, 59, 36"/); // #B13B24 light
   assert.match(program, /mainSurfaceApplied/);
   assert.match(program, /expectedPanelOpacity/);
+  assert.match(program, /sidebarSurfaceApplied/);
+  assert.match(program, /composerSurfaceApplied/);
+  assert.match(program, /floatingSurfaceApplied/);
 });
 
 test('main surface glass targets the semantic landmark, not a volatile Codex class', async () => {
   const css = buildCss(await loadTheme(autoFixture()));
   assert.match(css, /:root\.ctx-themed main \{/);
   assert.doesNotMatch(css, /main\.main-surface/);
+});
+
+test('glass CSS supports current and legacy composer and floating-panel hooks', async () => {
+  const css = buildCss(await loadTheme(autoFixture()));
+  assert.match(css, /\.composer-surface-chrome,/);
+  assert.match(css, /\[data-composer-surface-variant\]/);
+  assert.match(css, /\.bg-token-dropdown-background,/);
+  assert.match(css, /\[class~="electron:elevation-prominent"\]\.bg-surface-elevated-secondary/);
 });
 
 test('single-mode theme yields identical light/dark sets (swap is a no-op)', async () => {

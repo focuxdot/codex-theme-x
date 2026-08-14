@@ -27,7 +27,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const PAYLOAD_VERSION = 15;
+const PAYLOAD_VERSION = 16;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const IMAGE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -506,7 +506,8 @@ function buildCss(theme) {
    Density is scaled by --ctx-veil-scale: a dark veil over bright artwork
    reads perceptually denser than a light one at the same alpha (it subtracts
    luminance), so dark mode gets ~0.6× the configured density. */
-:root.ctx-themed .bg-token-dropdown-background {
+:root.ctx-themed .bg-token-dropdown-background,
+:root.ctx-themed [class~="electron:elevation-prominent"].bg-surface-elevated-secondary {
   background-color: rgba(var(--ctx-surface-rgb), calc(var(--ctx-float-a) * var(--ctx-veil-scale))) !important;
   backdrop-filter: blur(var(--ctx-glass-blur));
 }
@@ -514,7 +515,8 @@ function buildCss(theme) {
    the panel body): two stacked veils double the density right where the title
    sits. Inner layers thin out to a hint — the outer frost already carries
    readability. */
-:root.ctx-themed .bg-token-dropdown-background .bg-token-dropdown-background {
+:root.ctx-themed .bg-token-dropdown-background .bg-token-dropdown-background,
+:root.ctx-themed [class~="electron:elevation-prominent"].bg-surface-elevated-secondary .bg-surface-elevated-secondary {
   background-color: rgba(var(--ctx-surface-rgb), calc(var(--ctx-float-a) * var(--ctx-veil-scale) * 0.45)) !important;
   backdrop-filter: none;
 }
@@ -525,7 +527,8 @@ function buildCss(theme) {
    is gentler than the floats' veil-scale (0.6): this is the typing surface,
    so it keeps the thickest backing of any glass panel. Native backdrop blur
    is kept as-is. */
-:root.ctx-themed .composer-surface-chrome {
+:root.ctx-themed .composer-surface-chrome,
+:root.ctx-themed [data-composer-surface-variant] {
   background-color: rgba(var(--ctx-surface-rgb), calc(var(--ctx-composer-a) * var(--ctx-composer-scale))) !important;
 }
 /* The nav header is already transparent; the only header/content divider is
@@ -724,7 +727,8 @@ function buildCss(theme) {
   border-color: color-mix(in srgb, var(--codex-base-accent, ${theme.accent ?? heroInk}) 48%, transparent) !important;
   box-shadow: 0 15px 32px var(--ctx-cover-shadow) !important;
 }
-:root.ctx-themed body:has(section[class*="home-suggestions"]) .composer-surface-chrome {
+:root.ctx-themed body:has(section[class*="home-suggestions"]) .composer-surface-chrome,
+:root.ctx-themed body:has(section[class*="home-suggestions"]) [data-composer-surface-variant] {
   border: 1px solid var(--ctx-hairline) !important;
   border-radius: 24px !important;
   background-color: rgba(var(--ctx-surface-rgb), 0.9) !important;
@@ -982,9 +986,9 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     tuneSheet.replaceSync(':root.ctx-themed { ' + body + ' }');
   };
 
-  // Report whether the live main surface actually follows the configured
-  // panel opacity. Merely finding window.__ctxTheme is insufficient: a Codex
-  // update can rename a selector while leaving the payload itself alive.
+  // Report whether each live glass surface follows the configured opacity.
+  // Merely finding window.__ctxTheme is insufficient: a Codex update can
+  // rename one selector while leaving the payload and the other layers alive.
   const colorAlpha = (value) => {
     if (!value || value === 'transparent') return 0;
     const match = /^rgba?\\(([^)]+)\\)$/.exec(value.trim());
@@ -994,21 +998,50 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
   };
   const health = () => {
     const main = document.querySelector('main');
-    const rootStyle = getComputedStyle(root);
-    const expectedPanelOpacity = Number.parseFloat(
-      typeof rootStyle.getPropertyValue === 'function'
-        ? rootStyle.getPropertyValue('--ctx-panel-a').trim()
-        : ''
+    const sidebar = document.querySelector('aside.app-shell-left-panel');
+    const composer = document.querySelector('.composer-surface-chrome, [data-composer-surface-variant]');
+    const floating = document.querySelector(
+      '.bg-token-dropdown-background, [class~="electron:elevation-prominent"].bg-surface-elevated-secondary'
     );
+    const rootStyle = getComputedStyle(root);
+    const readVar = (name) => Number.parseFloat(
+      typeof rootStyle.getPropertyValue === 'function' ? rootStyle.getPropertyValue(name).trim() : ''
+    );
+    const expectedPanelOpacity = readVar('--ctx-panel-a');
+    const expectedSidebarOpacity = readVar('--ctx-side-a');
+    const expectedComposerOpacity = readVar('--ctx-composer-a') * readVar('--ctx-composer-scale');
+    const expectedFloatingOpacity = readVar('--ctx-float-a') * readVar('--ctx-veil-scale');
     const mainBackground = main ? getComputedStyle(main).backgroundColor : null;
+    const sidebarBackground = sidebar ? getComputedStyle(sidebar).backgroundColor : null;
+    const composerBackground = composer ? getComputedStyle(composer).backgroundColor : null;
+    const floatingBackground = floating ? getComputedStyle(floating).backgroundColor : null;
     const actualPanelOpacity = colorAlpha(mainBackground);
+    const actualSidebarOpacity = colorAlpha(sidebarBackground);
+    const actualComposerOpacity = colorAlpha(composerBackground);
+    const actualFloatingOpacity = colorAlpha(floatingBackground);
+    const follows = (el, expected, actual) => Boolean(el) && Number.isFinite(expected) &&
+      Number.isFinite(actual) && Math.abs(actual - expected) <= 0.03;
     return {
       mainFound: Boolean(main),
       mainBackground,
       expectedPanelOpacity: Number.isFinite(expectedPanelOpacity) ? expectedPanelOpacity : null,
       actualPanelOpacity: Number.isFinite(actualPanelOpacity) ? actualPanelOpacity : null,
-      mainSurfaceApplied: Boolean(main) && Number.isFinite(expectedPanelOpacity) &&
-        Number.isFinite(actualPanelOpacity) && Math.abs(actualPanelOpacity - expectedPanelOpacity) <= 0.03,
+      mainSurfaceApplied: follows(main, expectedPanelOpacity, actualPanelOpacity),
+      sidebarFound: Boolean(sidebar),
+      sidebarBackground,
+      expectedSidebarOpacity: Number.isFinite(expectedSidebarOpacity) ? expectedSidebarOpacity : null,
+      actualSidebarOpacity: Number.isFinite(actualSidebarOpacity) ? actualSidebarOpacity : null,
+      sidebarSurfaceApplied: follows(sidebar, expectedSidebarOpacity, actualSidebarOpacity),
+      composerFound: Boolean(composer),
+      composerBackground,
+      expectedComposerOpacity: Number.isFinite(expectedComposerOpacity) ? expectedComposerOpacity : null,
+      actualComposerOpacity: Number.isFinite(actualComposerOpacity) ? actualComposerOpacity : null,
+      composerSurfaceApplied: follows(composer, expectedComposerOpacity, actualComposerOpacity),
+      floatingFound: Boolean(floating),
+      floatingBackground,
+      expectedFloatingOpacity: Number.isFinite(expectedFloatingOpacity) ? expectedFloatingOpacity : null,
+      actualFloatingOpacity: Number.isFinite(actualFloatingOpacity) ? actualFloatingOpacity : null,
+      floatingSurfaceApplied: floating ? follows(floating, expectedFloatingOpacity, actualFloatingOpacity) : null,
       artworkPresent: typeof rootStyle.getPropertyValue === 'function' &&
         Boolean(rootStyle.getPropertyValue('--ctx-bg-art').trim()),
     };

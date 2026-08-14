@@ -63,6 +63,29 @@ if [ -f "$POINTER" ]; then
           missing) bad "Codex main surface was not found (app internals changed)" ;;
           *) warn "payload is older than the live surface check; re-apply the theme" ;;
         esac
+        LAYER_REPORT="$(printf '%s' "$STATUS" | "$NODE" -e '
+          process.stdin.on("data", d => {
+            const h = JSON.parse(d).health;
+            if (!h || !("sidebarSurfaceApplied" in h)) return;
+            const rows = [
+              ["sidebar", h.sidebarFound, h.sidebarSurfaceApplied, h.actualSidebarOpacity, h.expectedSidebarOpacity],
+              ["composer", h.composerFound, h.composerSurfaceApplied, h.actualComposerOpacity, h.expectedComposerOpacity],
+              ["floating panel", h.floatingFound, h.floatingSurfaceApplied, h.actualFloatingOpacity, h.expectedFloatingOpacity],
+            ];
+            for (const [name, found, applied, actual, expected] of rows) {
+              const state = !found ? (name === "floating panel" ? "hidden" : "missing") : applied ? "ok" : "bad";
+              console.log([name, state, `actual ${actual}, configured ${expected}`].join("\t"));
+            }
+          })' 2>/dev/null || true)"
+        while IFS=$'\t' read -r LAYER_NAME LAYER_STATE LAYER_DETAIL; do
+          [ -n "$LAYER_NAME" ] || continue
+          case "$LAYER_STATE" in
+            ok) ok "$LAYER_NAME follows theme opacity ($LAYER_DETAIL)" ;;
+            hidden) ok "$LAYER_NAME is not currently visible (checked when opened)" ;;
+            missing) bad "Codex $LAYER_NAME surface was not found (app internals changed)" ;;
+            bad) bad "$LAYER_NAME does NOT follow theme opacity ($LAYER_DETAIL; Codex likely changed its DOM/CSS)" ;;
+          esac
+        done <<< "$LAYER_REPORT"
         ;;
       false) bad "theme is set but the background is NOT injected (run apply, or install the keeper)" ;;
       *)     warn "could not query injection state" ;;
