@@ -27,7 +27,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const PAYLOAD_VERSION = 16;
+const PAYLOAD_VERSION = 17;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const IMAGE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -549,7 +549,8 @@ function buildCss(theme) {
    surface gradient, wider than the composer) that fades messages out behind
    the input. Over artwork it reads as a stray rectangular slab — the
    composer's own frosted veil already keeps the input readable. */
-:root.ctx-themed main .bg-gradient-to-t[class*="from-token-main-surface"] {
+:root.ctx-themed main .bg-gradient-to-t[class*="from-token-main-surface"],
+:root.ctx-themed main .bg-gradient-to-t.from-surface.via-surface {
   background-image: none !important;
 }
 /* Reading lane: a soft-edged surface-colored sheet running the length of the
@@ -1003,6 +1004,9 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     const floating = document.querySelector(
       '.bg-token-dropdown-background, [class~="electron:elevation-prominent"].bg-surface-elevated-secondary'
     );
+    const bottomMask = document.querySelector(
+      'main .bg-gradient-to-t[class*="from-token-main-surface"], main .bg-gradient-to-t.from-surface.via-surface'
+    );
     const rootStyle = getComputedStyle(root);
     const readVar = (name) => Number.parseFloat(
       typeof rootStyle.getPropertyValue === 'function' ? rootStyle.getPropertyValue(name).trim() : ''
@@ -1015,6 +1019,7 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     const sidebarBackground = sidebar ? getComputedStyle(sidebar).backgroundColor : null;
     const composerBackground = composer ? getComputedStyle(composer).backgroundColor : null;
     const floatingBackground = floating ? getComputedStyle(floating).backgroundColor : null;
+    const bottomMaskBackgroundImage = bottomMask ? getComputedStyle(bottomMask).backgroundImage : null;
     const actualPanelOpacity = colorAlpha(mainBackground);
     const actualSidebarOpacity = colorAlpha(sidebarBackground);
     const actualComposerOpacity = colorAlpha(composerBackground);
@@ -1042,6 +1047,9 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
       expectedFloatingOpacity: Number.isFinite(expectedFloatingOpacity) ? expectedFloatingOpacity : null,
       actualFloatingOpacity: Number.isFinite(actualFloatingOpacity) ? actualFloatingOpacity : null,
       floatingSurfaceApplied: floating ? follows(floating, expectedFloatingOpacity, actualFloatingOpacity) : null,
+      bottomMaskFound: Boolean(bottomMask),
+      bottomMaskBackgroundImage,
+      bottomMaskClear: bottomMask ? bottomMaskBackgroundImage === 'none' : null,
       artworkPresent: typeof rootStyle.getPropertyValue === 'function' &&
         Boolean(rootStyle.getPropertyValue('--ctx-bg-art').trim()),
     };

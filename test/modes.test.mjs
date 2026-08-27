@@ -89,6 +89,7 @@ test('rendererProgram embeds a live per-mode density swap for an auto theme', as
   assert.match(program, /sidebarSurfaceApplied/);
   assert.match(program, /composerSurfaceApplied/);
   assert.match(program, /floatingSurfaceApplied/);
+  assert.match(program, /bottomMaskClear/);
 });
 
 test('main surface glass targets the semantic landmark, not a volatile Codex class', async () => {
@@ -103,6 +104,13 @@ test('glass CSS supports current and legacy composer and floating-panel hooks', 
   assert.match(css, /\[data-composer-surface-variant\]/);
   assert.match(css, /\.bg-token-dropdown-background,/);
   assert.match(css, /\[class~="electron:elevation-prominent"\]\.bg-surface-elevated-secondary/);
+});
+
+test('bottom scroll mask is removed for current and legacy Codex utility names', async () => {
+  const css = buildCss(await loadTheme(autoFixture()));
+  assert.match(css, /\.bg-gradient-to-t\[class\*="from-token-main-surface"\],/);
+  assert.match(css, /\.bg-gradient-to-t\.from-surface\.via-surface/);
+  assert.match(css, /background-image: none !important/);
 });
 
 test('single-mode theme yields identical light/dark sets (swap is a no-op)', async () => {

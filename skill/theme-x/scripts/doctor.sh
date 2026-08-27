@@ -71,9 +71,11 @@ if [ -f "$POINTER" ]; then
               ["sidebar", h.sidebarFound, h.sidebarSurfaceApplied, h.actualSidebarOpacity, h.expectedSidebarOpacity],
               ["composer", h.composerFound, h.composerSurfaceApplied, h.actualComposerOpacity, h.expectedComposerOpacity],
               ["floating panel", h.floatingFound, h.floatingSurfaceApplied, h.actualFloatingOpacity, h.expectedFloatingOpacity],
+              ["bottom scroll mask", h.bottomMaskFound, h.bottomMaskClear, h.bottomMaskBackgroundImage, "none"],
             ];
             for (const [name, found, applied, actual, expected] of rows) {
-              const state = !found ? (name === "floating panel" ? "hidden" : "missing") : applied ? "ok" : "bad";
+              const optional = name === "floating panel" || name === "bottom scroll mask";
+              const state = !found ? (optional ? "hidden" : "missing") : applied ? "ok" : "bad";
               console.log([name, state, `actual ${actual}, configured ${expected}`].join("\t"));
             }
           })' 2>/dev/null || true)"
