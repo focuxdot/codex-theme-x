@@ -27,7 +27,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const PAYLOAD_VERSION = 17;
+const PAYLOAD_VERSION = 19;
 const MAX_IMAGE_BYTES = 16 * 1024 * 1024;
 const IMAGE_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
@@ -490,6 +490,12 @@ function buildCss(theme) {
      artwork it reads as a stray divider between sidebar and content. */
   box-shadow: none !important;
 }
+/* Newer Codex builds wrap the whole workspace in a page-surface frame with
+   its own opaque oklab background. It sits outside both <main> and the left
+   panel, so clearing those children alone still leaves the skin looking dead. */
+:root.ctx-themed [data-app-shell-page-surface="true"] {
+  background: transparent !important;
+}
 :root.ctx-themed aside.app-shell-left-panel {
   background-color: rgba(var(--ctx-surface-rgb), var(--ctx-side-a)) !important;
   backdrop-filter: blur(var(--ctx-side-blur)) saturate(115%);
@@ -531,6 +537,11 @@ function buildCss(theme) {
 :root.ctx-themed [data-composer-surface-variant] {
   background-color: rgba(var(--ctx-surface-rgb), calc(var(--ctx-composer-a) * var(--ctx-composer-scale))) !important;
 }
+/* Codex 26.928 moved an opaque surface onto the composer's inner body. Keep
+   the glass on the root and make the new inner plate transparent. */
+:root.ctx-themed [data-composer-surface-variant] [data-composer-body] {
+  background: transparent !important;
+}
 /* The nav header is already transparent; the only header/content divider is
    this native fade band (surface → transparent). Over full-strength artwork
    it reads as a stray light strip, so the art runs true full-bleed instead. */
@@ -552,6 +563,33 @@ function buildCss(theme) {
 :root.ctx-themed main .bg-gradient-to-t[class*="from-token-main-surface"],
 :root.ctx-themed main .bg-gradient-to-t.from-surface.via-surface {
   background-image: none !important;
+}
+/* When the above-composer portal contains transient content (for example the
+   "N files changed" pill), Codex inserts a second, shorter surface gradient.
+   It is absent in the empty state, which made the dark strip look intermittent. */
+:root.ctx-themed main [data-above-composer-portal] .bg-gradient-to-t.from-surface.to-transparent {
+  background-image: none !important;
+}
+/* Codex 26.928 replaced the sticky footer mask with two new siblings: a short
+   gradient plus a full-width solid surface. Both sit behind the composer and
+   must be clear when the thread itself is transparent. */
+:root.ctx-themed main [data-thread-scroll-footer="true"] {
+  background: transparent !important;
+}
+:root.ctx-themed main [data-thread-scroll-footer="true"] > .bg-gradient-to-t.from-surface {
+  background-image: none !important;
+}
+:root.ctx-themed main [data-thread-scroll-footer="true"] > .bg-surface {
+  background: transparent !important;
+}
+/* One layout variant places the same two layers as siblings of the footer
+   inside a sticky wrapper. This is the thin black edge seen immediately above
+   the composer in the current conversation layout. */
+:root.ctx-themed main .sticky.bottom-0 > .bg-gradient-to-t.from-surface {
+  background-image: none !important;
+}
+:root.ctx-themed main .sticky.bottom-0 > .bg-surface {
+  background: transparent !important;
 }
 /* Reading lane: a soft-edged surface-colored sheet running the length of the
    thread column (the app's own max-width wrapper; flex-1 excludes the
@@ -593,7 +631,8 @@ function buildCss(theme) {
    and the accent aura tints take over as the (designed) atmosphere. Paints
    after body::before, so it sits over the artwork and under all content; task
    pages keep the full-bleed background. */
-:root.ctx-themed body:has(section[class*="home-suggestions"])::after {
+:root.ctx-themed body:not(:has([data-app-shell-active-page])):has(section[class*="home-suggestions"])::after,
+:root.ctx-themed body:has([data-app-shell-active-page="true"] section[class*="home-suggestions"])::after {
   content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
   background:
     radial-gradient(60% 42% at 82% 6%, rgba(var(--ctx-accent-rgb), 0.18), transparent 100%),
@@ -601,7 +640,8 @@ function buildCss(theme) {
     rgba(var(--ctx-surface-rgb), var(--ctx-home-backdrop-a));
   backdrop-filter: blur(var(--ctx-home-backdrop-blur));
 }
-:root.ctx-themed body:has(section[class*="home-suggestions"]) div[class~="home-main-content"] {
+:root.ctx-themed body:not(:has([data-app-shell-active-page])):has(section[class*="home-suggestions"]) div[class~="home-main-content"],
+:root.ctx-themed [data-app-shell-active-page="true"]:has(section[class*="home-suggestions"]) div[class~="home-main-content"] {
   margin: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
@@ -728,15 +768,18 @@ function buildCss(theme) {
   border-color: color-mix(in srgb, var(--codex-base-accent, ${theme.accent ?? heroInk}) 48%, transparent) !important;
   box-shadow: 0 15px 32px var(--ctx-cover-shadow) !important;
 }
-:root.ctx-themed body:has(section[class*="home-suggestions"]) .composer-surface-chrome,
-:root.ctx-themed body:has(section[class*="home-suggestions"]) [data-composer-surface-variant] {
+:root.ctx-themed body:not(:has([data-app-shell-active-page])):has(section[class*="home-suggestions"]) .composer-surface-chrome,
+:root.ctx-themed body:not(:has([data-app-shell-active-page])):has(section[class*="home-suggestions"]) [data-composer-surface-variant],
+:root.ctx-themed [data-app-shell-active-page="true"]:has(section[class*="home-suggestions"]) .composer-surface-chrome,
+:root.ctx-themed [data-app-shell-active-page="true"]:has(section[class*="home-suggestions"]) [data-composer-surface-variant] {
   border: 1px solid var(--ctx-hairline) !important;
   border-radius: 24px !important;
   background-color: rgba(var(--ctx-surface-rgb), 0.9) !important;
   backdrop-filter: blur(var(--ctx-glass-blur)) saturate(116%) !important;
   box-shadow: 0 14px 36px var(--ctx-cover-shadow), inset 0 1px rgba(255,255,255,0.06) !important;
 }
-:root.ctx-themed body:has(section[class*="home-suggestions"]) div:has(> .horizontal-scroll-fade-mask [class*="project-selector"]) {
+:root.ctx-themed body:not(:has([data-app-shell-active-page])):has(section[class*="home-suggestions"]) div:has(> .horizontal-scroll-fade-mask [class*="project-selector"]),
+:root.ctx-themed [data-app-shell-active-page="true"]:has(section[class*="home-suggestions"]) div:has(> .horizontal-scroll-fade-mask [class*="project-selector"]) {
   position: relative;
   padding-top: 26px !important;
   border: 1px solid var(--ctx-hairline);
@@ -744,7 +787,8 @@ function buildCss(theme) {
   background-color: rgba(var(--ctx-surface-rgb), 0.84) !important;
   backdrop-filter: blur(var(--ctx-glass-blur)) saturate(112%);
 }
-:root.ctx-themed body:has(section[class*="home-suggestions"]) div:has(> .horizontal-scroll-fade-mask [class*="project-selector"])::before {
+:root.ctx-themed body:not(:has([data-app-shell-active-page])):has(section[class*="home-suggestions"]) div:has(> .horizontal-scroll-fade-mask [class*="project-selector"])::before,
+:root.ctx-themed [data-app-shell-active-page="true"]:has(section[class*="home-suggestions"]) div:has(> .horizontal-scroll-fade-mask [class*="project-selector"])::before {
   content: "Select project";
   position: absolute;
   left: 14px;
@@ -862,13 +906,14 @@ function buildCss(theme) {
 :root.ctx-themed .ctx-campaign-state-action:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 ${theme.copy.placeholder ? `
-/* Themed composer placeholder. The native placeholder is painted by CSS
-   (p[data-placeholder]::after, content from the attribute) — overriding the
-   painted content is the ONLY safe route: ProseMirror owns the editor DOM
-   and instantly rebuilds any node an outsider touches, so attribute writes
-   always lose the fight. Pure CSS never enters that fight. */
-:root.ctx-themed [contenteditable] p[data-placeholder]::after {
+/* Codex 26.928 moved the native placeholder from ::after to ::before.
+   Override the current painter and explicitly suppress the legacy painter so
+   the native and themed strings can never stack. */
+:root.ctx-themed [contenteditable] p[data-placeholder]::before {
   content: ${JSON.stringify(theme.copy.placeholder)} !important;
+}
+:root.ctx-themed [contenteditable] p[data-placeholder]::after {
+  content: none !important;
 }` : ''}
 `;
 }
@@ -1000,13 +1045,24 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
   const health = () => {
     const main = document.querySelector('main');
     const sidebar = document.querySelector('aside.app-shell-left-panel');
-    const composer = document.querySelector('.composer-surface-chrome, [data-composer-surface-variant]');
+    const pageSurface = document.querySelector('[data-app-shell-page-surface="true"]');
+    const activePage = document.querySelector('[data-app-shell-active-page="true"]');
+    const composer = (activePage || document).querySelector('.composer-surface-chrome, [data-composer-surface-variant]');
+    const composerBody = composer?.querySelector('[data-composer-body]') ?? null;
     const floating = document.querySelector(
       '.bg-token-dropdown-background, [class~="electron:elevation-prominent"].bg-surface-elevated-secondary'
     );
-    const bottomMask = document.querySelector(
-      'main .bg-gradient-to-t[class*="from-token-main-surface"], main .bg-gradient-to-t.from-surface.via-surface'
-    );
+    const bottomMasks = [...document.querySelectorAll([
+      'main .bg-gradient-to-t[class*="from-token-main-surface"]',
+      'main .bg-gradient-to-t.from-surface.via-surface',
+      'main [data-above-composer-portal] .bg-gradient-to-t.from-surface.to-transparent',
+      'main [data-thread-scroll-footer="true"] > .bg-gradient-to-t.from-surface',
+      'main .sticky.bottom-0 > .bg-gradient-to-t.from-surface',
+    ].join(', '))];
+    const bottomSolid = document.querySelector([
+      'main [data-thread-scroll-footer="true"] > .bg-surface',
+      'main .sticky.bottom-0 > .bg-surface',
+    ].join(', '));
     const rootStyle = getComputedStyle(root);
     const readVar = (name) => Number.parseFloat(
       typeof rootStyle.getPropertyValue === 'function' ? rootStyle.getPropertyValue(name).trim() : ''
@@ -1017,13 +1073,22 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
     const expectedFloatingOpacity = readVar('--ctx-float-a') * readVar('--ctx-veil-scale');
     const mainBackground = main ? getComputedStyle(main).backgroundColor : null;
     const sidebarBackground = sidebar ? getComputedStyle(sidebar).backgroundColor : null;
+    const pageSurfaceBackground = pageSurface ? getComputedStyle(pageSurface).backgroundColor : null;
     const composerBackground = composer ? getComputedStyle(composer).backgroundColor : null;
+    const composerBodyBackground = composerBody ? getComputedStyle(composerBody).backgroundColor : null;
     const floatingBackground = floating ? getComputedStyle(floating).backgroundColor : null;
-    const bottomMaskBackgroundImage = bottomMask ? getComputedStyle(bottomMask).backgroundImage : null;
+    const bottomMaskBackgroundImages = bottomMasks.map((mask) => getComputedStyle(mask).backgroundImage);
+    const bottomMaskBackgroundImage = bottomMaskBackgroundImages.length
+      ? bottomMaskBackgroundImages.join(' | ')
+      : null;
+    const bottomSolidBackground = bottomSolid ? getComputedStyle(bottomSolid).backgroundColor : null;
     const actualPanelOpacity = colorAlpha(mainBackground);
     const actualSidebarOpacity = colorAlpha(sidebarBackground);
+    const actualPageSurfaceOpacity = colorAlpha(pageSurfaceBackground);
     const actualComposerOpacity = colorAlpha(composerBackground);
+    const actualComposerBodyOpacity = colorAlpha(composerBodyBackground);
     const actualFloatingOpacity = colorAlpha(floatingBackground);
+    const actualBottomSolidOpacity = colorAlpha(bottomSolidBackground);
     const follows = (el, expected, actual) => Boolean(el) && Number.isFinite(expected) &&
       Number.isFinite(actual) && Math.abs(actual - expected) <= 0.03;
     return {
@@ -1037,19 +1102,34 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
       expectedSidebarOpacity: Number.isFinite(expectedSidebarOpacity) ? expectedSidebarOpacity : null,
       actualSidebarOpacity: Number.isFinite(actualSidebarOpacity) ? actualSidebarOpacity : null,
       sidebarSurfaceApplied: follows(sidebar, expectedSidebarOpacity, actualSidebarOpacity),
+      pageSurfaceFound: Boolean(pageSurface),
+      pageSurfaceBackground,
+      actualPageSurfaceOpacity: Number.isFinite(actualPageSurfaceOpacity) ? actualPageSurfaceOpacity : null,
+      pageSurfaceApplied: Boolean(pageSurface) && Number.isFinite(actualPageSurfaceOpacity) &&
+        Math.abs(actualPageSurfaceOpacity) <= 0.03,
       composerFound: Boolean(composer),
       composerBackground,
       expectedComposerOpacity: Number.isFinite(expectedComposerOpacity) ? expectedComposerOpacity : null,
       actualComposerOpacity: Number.isFinite(actualComposerOpacity) ? actualComposerOpacity : null,
       composerSurfaceApplied: follows(composer, expectedComposerOpacity, actualComposerOpacity),
+      composerBodyFound: Boolean(composerBody),
+      composerBodyBackground,
+      actualComposerBodyOpacity: Number.isFinite(actualComposerBodyOpacity) ? actualComposerBodyOpacity : null,
+      composerBodySurfaceApplied: composerBody ? Number.isFinite(actualComposerBodyOpacity) &&
+        Math.abs(actualComposerBodyOpacity) <= 0.03 : null,
       floatingFound: Boolean(floating),
       floatingBackground,
       expectedFloatingOpacity: Number.isFinite(expectedFloatingOpacity) ? expectedFloatingOpacity : null,
       actualFloatingOpacity: Number.isFinite(actualFloatingOpacity) ? actualFloatingOpacity : null,
       floatingSurfaceApplied: floating ? follows(floating, expectedFloatingOpacity, actualFloatingOpacity) : null,
-      bottomMaskFound: Boolean(bottomMask),
+      bottomMaskFound: bottomMasks.length > 0,
       bottomMaskBackgroundImage,
-      bottomMaskClear: bottomMask ? bottomMaskBackgroundImage === 'none' : null,
+      bottomMaskClear: bottomMasks.length ? bottomMaskBackgroundImages.every((image) => image === 'none') : null,
+      bottomSolidFound: Boolean(bottomSolid),
+      bottomSolidBackground,
+      actualBottomSolidOpacity: Number.isFinite(actualBottomSolidOpacity) ? actualBottomSolidOpacity : null,
+      bottomSolidClear: bottomSolid ? Number.isFinite(actualBottomSolidOpacity) &&
+        Math.abs(actualBottomSolidOpacity) <= 0.03 : null,
       artworkPresent: typeof rootStyle.getPropertyValue === 'function' &&
         Boolean(rootStyle.getPropertyValue('--ctx-bg-art').trim()),
     };

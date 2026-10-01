@@ -69,12 +69,15 @@ if [ -f "$POINTER" ]; then
             if (!h || !("sidebarSurfaceApplied" in h)) return;
             const rows = [
               ["sidebar", h.sidebarFound, h.sidebarSurfaceApplied, h.actualSidebarOpacity, h.expectedSidebarOpacity],
+              ["page surface", h.pageSurfaceFound, h.pageSurfaceApplied, h.actualPageSurfaceOpacity, 0],
               ["composer", h.composerFound, h.composerSurfaceApplied, h.actualComposerOpacity, h.expectedComposerOpacity],
+              ["composer inner surface", h.composerBodyFound, h.composerBodySurfaceApplied, h.actualComposerBodyOpacity, 0],
               ["floating panel", h.floatingFound, h.floatingSurfaceApplied, h.actualFloatingOpacity, h.expectedFloatingOpacity],
               ["bottom scroll mask", h.bottomMaskFound, h.bottomMaskClear, h.bottomMaskBackgroundImage, "none"],
+              ["bottom scroll fill", h.bottomSolidFound, h.bottomSolidClear, h.actualBottomSolidOpacity, 0],
             ];
             for (const [name, found, applied, actual, expected] of rows) {
-              const optional = name === "floating panel" || name === "bottom scroll mask";
+              const optional = name === "floating panel" || name.startsWith("bottom scroll");
               const state = !found ? (optional ? "hidden" : "missing") : applied ? "ok" : "bad";
               console.log([name, state, `actual ${actual}, configured ${expected}`].join("\t"));
             }

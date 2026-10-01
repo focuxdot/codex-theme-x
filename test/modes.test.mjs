@@ -87,9 +87,12 @@ test('rendererProgram embeds a live per-mode density swap for an auto theme', as
   assert.match(program, /mainSurfaceApplied/);
   assert.match(program, /expectedPanelOpacity/);
   assert.match(program, /sidebarSurfaceApplied/);
+  assert.match(program, /pageSurfaceApplied/);
   assert.match(program, /composerSurfaceApplied/);
+  assert.match(program, /composerBodySurfaceApplied/);
   assert.match(program, /floatingSurfaceApplied/);
   assert.match(program, /bottomMaskClear/);
+  assert.match(program, /bottomSolidClear/);
 });
 
 test('main surface glass targets the semantic landmark, not a volatile Codex class', async () => {
@@ -110,7 +113,33 @@ test('bottom scroll mask is removed for current and legacy Codex utility names',
   const css = buildCss(await loadTheme(autoFixture()));
   assert.match(css, /\.bg-gradient-to-t\[class\*="from-token-main-surface"\],/);
   assert.match(css, /\.bg-gradient-to-t\.from-surface\.via-surface/);
+  assert.match(css, /\[data-above-composer-portal\] \.bg-gradient-to-t\.from-surface\.to-transparent/);
+  assert.match(css, /\[data-thread-scroll-footer="true"\] > \.bg-gradient-to-t\.from-surface/);
+  assert.match(css, /\[data-thread-scroll-footer="true"\] > \.bg-surface/);
+  assert.match(css, /\.sticky\.bottom-0 > \.bg-gradient-to-t\.from-surface/);
+  assert.match(css, /\.sticky\.bottom-0 > \.bg-surface/);
   assert.match(css, /background-image: none !important/);
+});
+
+test('current Codex page-surface frame is transparent under a themed app', async () => {
+  const css = buildCss(await loadTheme(autoFixture()));
+  assert.match(css, /\[data-app-shell-page-surface="true"\]/);
+  assert.match(css, /background: transparent !important/);
+});
+
+test('composer inner plate is transparent and placeholder uses one painter', async () => {
+  const css = buildCss(await loadTheme(autoFixture({ copy: { placeholder: 'Theme prompt' } })));
+  assert.match(css, /\[data-composer-surface-variant\] \[data-composer-body\]/);
+  assert.match(css, /p\[data-placeholder\]::before/);
+  assert.match(css, /content: "Theme prompt" !important/);
+  assert.match(css, /p\[data-placeholder\]::after \{\n  content: none !important/);
+});
+
+test('home-only composer treatment is scoped to the active page in multi-page builds', async () => {
+  const css = buildCss(await loadTheme(autoFixture()));
+  assert.match(css, /\[data-app-shell-active-page="true"\]:has\(section\[class\*="home-suggestions"\]\)/);
+  assert.match(css, /body:not\(:has\(\[data-app-shell-active-page\]\)\):has\(section\[class\*="home-suggestions"\]\)/);
+  assert.doesNotMatch(css, /body:has\(section\[class\*="home-suggestions"\]\) \[data-composer-surface-variant\]/);
 });
 
 test('single-mode theme yields identical light/dark sets (swap is a no-op)', async () => {
