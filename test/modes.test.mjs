@@ -117,6 +117,7 @@ test('bottom scroll mask is removed for current and legacy Codex utility names',
   assert.match(css, /\[data-thread-scroll-footer="true"\] > \.bg-gradient-to-t\.from-surface/);
   assert.match(css, /\[data-thread-scroll-footer="true"\] > \.bg-surface/);
   assert.match(css, /\.sticky\.bottom-0 > \.bg-gradient-to-t\.from-surface/);
+  assert.match(css, /\.sticky\.bottom-0 > \.from-surface/);
   assert.match(css, /\.sticky\.bottom-0 > \.bg-surface/);
   assert.match(css, /background-image: none !important/);
 });

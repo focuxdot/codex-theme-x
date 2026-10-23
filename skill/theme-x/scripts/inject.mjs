@@ -588,6 +588,9 @@ function buildCss(theme) {
 :root.ctx-themed main .sticky.bottom-0 > .bg-gradient-to-t.from-surface {
   background-image: none !important;
 }
+:root.ctx-themed main .sticky.bottom-0 > .from-surface {
+  background-image: none !important;
+}
 :root.ctx-themed main .sticky.bottom-0 > .bg-surface {
   background: transparent !important;
 }
@@ -1058,6 +1061,7 @@ function rendererProgram({ css, backgroundDataUrl, homeDataUrl, accentRemap, nam
       'main [data-above-composer-portal] .bg-gradient-to-t.from-surface.to-transparent',
       'main [data-thread-scroll-footer="true"] > .bg-gradient-to-t.from-surface',
       'main .sticky.bottom-0 > .bg-gradient-to-t.from-surface',
+      'main .sticky.bottom-0 > .from-surface',
     ].join(', '))];
     const bottomSolid = document.querySelector([
       'main [data-thread-scroll-footer="true"] > .bg-surface',
